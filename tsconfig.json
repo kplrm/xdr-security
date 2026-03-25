@@ -5,6 +5,10 @@
     "moduleResolution": "node",
     "strict": true,
     "esModuleInterop": true,
+    "typeRoots": [
+      "./node_modules/@types",
+      "../OpenSearch-Dashboards/node_modules/@types"
+    ],
     "types": ["node"],
     "skipLibCheck": true,
     "outDir": "build"
