@@ -1,0 +1,245 @@
+name: XDR Plugin Bundle Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  OPENSEARCH_DASHBOARDS_REPOSITORY: opensearch-project/OpenSearch-Dashboards
+  OPENSEARCH_DASHBOARDS_VERSION: 3.5.0
+  OPENSEARCH_DASHBOARDS_REF: 3.5.0
+  XDR_COORDINATOR_REPOSITORY: ${{ github.repository_owner }}/xdr-coordinator
+  XDR_DEFENSE_REPOSITORY: ${{ github.repository_owner }}/xdr-defense
+  XDR_VISUALIZER_REPOSITORY: ${{ github.repository_owner }}/xdr-visualizer
+
+jobs:
+  release:
+    name: Build, bundle, and release all XDR plugins
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout OpenSearch Dashboards
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OPENSEARCH_DASHBOARDS_REPOSITORY }}
+          ref: ${{ env.OPENSEARCH_DASHBOARDS_REF }}
+          path: opensearch-dashboards
+
+      - name: Checkout xdr-coordinator
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XDR_COORDINATOR_REPOSITORY }}
+          path: sources/xdr-coordinator
+
+      - name: Checkout xdr-defense
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XDR_DEFENSE_REPOSITORY }}
+          path: sources/xdr-defense
+
+      - name: Checkout xdr-visualizer
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XDR_VISUALIZER_REPOSITORY }}
+          path: sources/xdr-visualizer
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: opensearch-dashboards/.nvmrc
+          registry-url: https://registry.npmjs.org
+
+      - name: Install Yarn
+        run: npm install -g yarn@1.22.22
+
+      - name: Cache yarn packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/yarn
+          key: ${{ runner.os }}-yarn-osd-${{ hashFiles('opensearch-dashboards/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-osd-
+
+      - name: Bootstrap OpenSearch Dashboards
+        working-directory: opensearch-dashboards
+        run: yarn osd bootstrap --single-version=loose || yarn osd bootstrap --single-version=loose
+
+      - name: Build all plugin ZIPs
+        run: |
+          set -euo pipefail
+
+          mkdir -p release-artifacts/plugins release-artifacts/meta
+
+          declare -A SRC_PATHS=(
+            [xdr-security]="${GITHUB_WORKSPACE}"
+            [xdr-coordinator]="${GITHUB_WORKSPACE}/sources/xdr-coordinator"
+            [xdr-defense]="${GITHUB_WORKSPACE}/sources/xdr-defense"
+            [xdr-visualizer]="${GITHUB_WORKSPACE}/sources/xdr-visualizer"
+          )
+
+          for plugin in xdr-security xdr-coordinator xdr-defense xdr-visualizer; do
+            src="${SRC_PATHS[$plugin]}"
+            target="opensearch-dashboards/plugins/${plugin}"
+
+            echo "==> Staging ${plugin}"
+            mkdir -p "${target}"
+            rsync -a --delete \
+              --exclude='.git' \
+              --exclude='build' \
+              --exclude='node_modules' \
+              --exclude='opensearch-dashboards' \
+              --exclude='sources' \
+              "${src}/" "${target}/"
+
+            echo "==> Building ${plugin}"
+            (
+              cd "${target}"
+              node ../../scripts/plugin_helpers build --opensearch-dashboards-version=${{ env.OPENSEARCH_DASHBOARDS_VERSION }}
+            )
+
+            zip_path=$(find "${target}/build" -maxdepth 1 -name '*.zip' | head -1)
+            if [ -z "${zip_path}" ]; then
+              echo "Built ZIP not found for ${plugin}" >&2
+              ls -la "${target}/build" >&2 || true
+              exit 1
+            fi
+
+            cp "${zip_path}" "release-artifacts/plugins/${plugin}.zip"
+
+            package_version=$(node -p "require('${src}/package.json').version")
+            manifest_version=$(node -p "require('${src}/opensearch_dashboards.json').version")
+            plugin_id=$(node -p "require('${src}/opensearch_dashboards.json').id")
+
+            if [ "${package_version}" != "${manifest_version}" ]; then
+              echo "Version mismatch in ${plugin}: package.json=${package_version}, opensearch_dashboards.json=${manifest_version}" >&2
+              exit 1
+            fi
+
+            cat > "release-artifacts/meta/${plugin}.json" <<EOF
+          {
+            "repo": "${plugin}",
+            "pluginId": "${plugin_id}",
+            "version": "${package_version}",
+            "osdVersion": "${{ env.OPENSEARCH_DASHBOARDS_VERSION }}"
+          }
+          EOF
+          done
+
+      - name: Compute release metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          TAG="xdr-bundle-$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}"
+          BUNDLE="xdr-plugins_${TAG}_osd-${{ env.OPENSEARCH_DASHBOARDS_VERSION }}.tar.gz"
+          CHECKSUMS="xdr-plugins_${TAG}_osd-${{ env.OPENSEARCH_DASHBOARDS_VERSION }}.sha256"
+          MANIFEST="xdr-plugins_${TAG}_manifest.json"
+          COMPOSE="docker-compose.xdr-plugins.${TAG}.yml"
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "bundle=${BUNDLE}" >> "$GITHUB_OUTPUT"
+          echo "checksums=${CHECKSUMS}" >> "$GITHUB_OUTPUT"
+          echo "manifest=${MANIFEST}" >> "$GITHUB_OUTPUT"
+          echo "compose=${COMPOSE}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release assets
+        run: |
+          set -euo pipefail
+
+          jq -s \
+            --arg osd "${{ env.OPENSEARCH_DASHBOARDS_VERSION }}" \
+            --arg tag "${{ steps.meta.outputs.tag }}" \
+            '{releaseTag: $tag, opensearchDashboardsVersion: $osd, plugins: .}' \
+            release-artifacts/meta/*.json > "release-artifacts/${{ steps.meta.outputs.manifest }}"
+
+          (
+            cd release-artifacts/plugins
+            sha256sum *.zip > "../${{ steps.meta.outputs.checksums }}"
+          )
+
+          tar -czf "release-artifacts/${{ steps.meta.outputs.bundle }}" -C release-artifacts/plugins .
+
+          cat > "release-artifacts/${{ steps.meta.outputs.compose }}" <<EOF
+          services:
+            opensearch-dashboards:
+              image: ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:${{ steps.meta.outputs.tag }}
+              ports:
+                - "5601:5601"
+              environment:
+                OPENSEARCH_HOSTS: '["https://opensearch:9200"]'
+          EOF
+
+      - name: Create and push release tag
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+          git tag "${{ steps.meta.outputs.tag }}"
+          git push origin "${{ steps.meta.outputs.tag }}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: XDR plugin bundle ${{ steps.meta.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release-artifacts/${{ steps.meta.outputs.bundle }}
+            release-artifacts/${{ steps.meta.outputs.checksums }}
+            release-artifacts/${{ steps.meta.outputs.manifest }}
+            release-artifacts/${{ steps.meta.outputs.compose }}
+
+      - name: Create Docker build context
+        run: |
+          set -euo pipefail
+          mkdir -p docker-context/plugins
+          cp release-artifacts/plugins/*.zip docker-context/plugins/
+
+          cat > docker-context/Dockerfile <<'EOF'
+          ARG OSD_VERSION=3.5.0
+          FROM opensearchproject/opensearch-dashboards:${OSD_VERSION}
+
+          COPY plugins/*.zip /tmp/xdr-plugins/
+          RUN set -eux; \
+              for plugin in /tmp/xdr-plugins/*.zip; do \
+                /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin install --allow-root "file://${plugin}"; \
+              done; \
+              rm -rf /tmp/xdr-plugins
+          EOF
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-platform bundle image
+        uses: docker/build-push-action@v6
+        with:
+          context: docker-context
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            OSD_VERSION=${{ env.OPENSEARCH_DASHBOARDS_VERSION }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:${{ steps.meta.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:latest
