@@ -20,7 +20,7 @@ Pull and run the plugin container, which will make plugins available via Docker 
 # Run the plugin container in the background
 docker run -d --name xdr-plugins \
   -v xdr-plugins:/plugins \
-  ghcr.io/<your-org>/xdr-plugins:latest
+  ghcr.io/kplrm/xdr-plugins:latest
 
 # Restart your Dashboards container to pick up plugins
 docker restart opensearch-dashboards
@@ -59,7 +59,7 @@ If you don't mind using our specific OpenSearch Dashboards version:
 docker run -d --name opensearch-dashboards \
   -p 5601:5601 \
   -e OPENSEARCH_HOSTS='["https://opensearch:9200"]' \
-  ghcr.io/<your-org>/opensearch-dashboards-xdr-bundle:latest
+  ghcr.io/kplrm/opensearch-dashboards-xdr-bundle:latest
 ```
 
 Or in Docker Compose:
@@ -67,7 +67,7 @@ Or in Docker Compose:
 ```yaml
 services:
   opensearch-dashboards:
-    image: ghcr.io/<your-org>/opensearch-dashboards-xdr-bundle:latest
+    image: ghcr.io/kplrm/opensearch-dashboards-xdr-bundle:latest
     ports:
       - "5601:5601"
     environment:
@@ -118,7 +118,7 @@ docker rm xdr-plugins
 # Pull and run the new version
 docker run -d --name xdr-plugins \
   -v xdr-plugins:/plugins \
-  ghcr.io/<your-org>/xdr-plugins:latest
+  ghcr.io/kplrm/xdr-plugins:latest
 
 # Restart Dashboards to pick up new plugins
 docker restart opensearch-dashboards
@@ -133,7 +133,7 @@ docker rm opensearch-dashboards
 docker run -d --name opensearch-dashboards \
   -p 5601:5601 \
   -e OPENSEARCH_HOSTS='["https://opensearch:9200"]' \
-  ghcr.io/<your-org>/opensearch-dashboards-xdr-bundle:latest
+  ghcr.io/kplrm/opensearch-dashboards-xdr-bundle:latest
 ```
 
 ### Manual install (Option 3):
