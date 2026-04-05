@@ -29,7 +29,7 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          TAG="xdr-$(date -u +%y%m%d)-${GITHUB_SHA::7}"
+          TAG="xdr-plugins-$(date -u +%Y%m%d)"
           BUNDLE="xdr-plugins_${TAG}_osd-${{ env.OPENSEARCH_DASHBOARDS_VERSION }}.tar.gz"
           CHECKSUMS="xdr-plugins_${TAG}_osd-${{ env.OPENSEARCH_DASHBOARDS_VERSION }}.sha256"
           MANIFEST="xdr-plugins_${TAG}_manifest.json"

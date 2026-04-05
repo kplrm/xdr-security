@@ -19,13 +19,13 @@ This document is the source of truth for the multi-plugin release produced by `x
 
 ## Release Tag Format
 
-`xdr-<YYMMDD>-<sha7>`
+`xdr-plugins-<YYYYMMDD>`
 
 Examples:
-- `xdr-240405-a1b2c3d`
-- `xdr-240410-f5e6d7c`
+- `xdr-plugins-20260405`
+- `xdr-plugins-20260410`
 
-Tag format is deterministic: generated from UTC date + first 7 chars of commit SHA.
+Tag format is deterministic: generated from UTC date at release time.
 
 ## Release Assets
 
