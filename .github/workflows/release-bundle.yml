@@ -412,6 +412,12 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/xdr-plugins:${{ needs.metadata.outputs.tag }}
             ghcr.io/${{ github.repository_owner }}/xdr-plugins:latest
 
+      - name: Verify sidecar tags are published
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "ghcr.io/${{ github.repository_owner }}/xdr-plugins:${{ needs.metadata.outputs.tag }}" >/dev/null
+          docker buildx imagetools inspect "ghcr.io/${{ github.repository_owner }}/xdr-plugins:latest" >/dev/null
+
   publish-release:
     name: Publish GitHub release
     needs: [metadata, bundle-assets, docker-image, docker-plugin-sidecar]
