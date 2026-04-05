@@ -29,7 +29,7 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          TAG="xdr-bundle-$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}"
+          TAG="xdr-$(date -u +%y%m%d)-${GITHUB_SHA::7}"
           BUNDLE="xdr-plugins_${TAG}_osd-${{ env.OPENSEARCH_DASHBOARDS_VERSION }}.tar.gz"
           CHECKSUMS="xdr-plugins_${TAG}_osd-${{ env.OPENSEARCH_DASHBOARDS_VERSION }}.sha256"
           MANIFEST="xdr-plugins_${TAG}_manifest.json"
@@ -233,9 +233,95 @@ jobs:
           path: release-artifacts/
           retention-days: 2
 
+  smoke-test:
+    name: "[${{ matrix.os }}/${{ matrix.arch }}] smoke test bundle image"
+    needs: [metadata, build-plugin]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: debian
+            arch: amd64
+            test_image: debian:stable-slim
+            platform: linux/amd64
+          - os: debian
+            arch: arm64
+            test_image: debian:stable-slim
+            platform: linux/arm64
+          - os: centos
+            arch: amd64
+            test_image: almalinux:9
+            platform: linux/amd64
+          - os: centos
+            arch: arm64
+            test_image: almalinux:9
+            platform: linux/arm64
+
+    steps:
+      - name: Set up QEMU (arm64 only)
+        if: matrix.arch == 'arm64'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Download all plugin artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: plugin-*
+          path: plugins-input
+          merge-multiple: true
+
+      - name: Create test Dockerfile
+        run: |
+          set -euo pipefail
+          mkdir -p docker-build
+          cp plugins-input/plugins/*.zip docker-build/
+
+          cat > docker-build/test-Dockerfile <<'EOF'
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
+
+          # Install opensearch-dashboards
+          RUN set -eux; \
+              if command -v apt-get >/dev/null 2>&1; then \
+                apt-get update -qq && \
+                apt-get install -y bash ca-certificates curl gzip tar >/dev/null; \
+              else \
+                dnf install -y --allowerasing bash ca-certificates curl gzip tar which findutils >/dev/null; \
+              fi
+
+          # Download and extract OSD
+          RUN set -eux; \
+              OSD_URL="https://artifacts.opensearch.org/releases/bundle/opensearch-dashboards/${{ env.OPENSEARCH_DASHBOARDS_VERSION }}/opensearch-dashboards-${{ env.OPENSEARCH_DASHBOARDS_VERSION }}-linux-$(uname -m | sed 's/x86_64/x64/g' | sed 's/aarch64/arm64/g').tar.gz"; \
+              mkdir -p /opt/osd && \
+              curl -fsSL "${OSD_URL}" | tar -xz -C /opt/osd
+
+          # Install plugins
+          COPY *.zip /tmp/plugins/
+          RUN set -eux; \
+              OSD_HOME=$(find /opt/osd -maxdepth 1 -type d -name 'opensearch-dashboards-*' | head -1); \
+              for plugin in /tmp/plugins/*.zip; do \
+                "${OSD_HOME}/bin/opensearch-dashboards-plugin" install --allow-root "file://${plugin}"; \
+              done && \
+              ls "${OSD_HOME}/plugins/" && \
+              echo 'Plugin installation test passed'
+          EOF
+
+      - name: Run multi-platform smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: docker-build
+          file: docker-build/test-Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            BASE_IMAGE=${{ matrix.test_image }}
+          push: false
+          outputs: type=oci
+
   docker-image:
     name: Build and publish bundle image
-    needs: [metadata, build-plugin]
+    needs: [metadata, build-plugin, smoke-test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -293,9 +379,69 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:${{ needs.metadata.outputs.tag }}
             ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:latest
 
+  docker-plugin-sidecar:
+    name: Build and publish plugin-only sidecar image
+    needs: [metadata, build-plugin, smoke-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download all plugin artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: plugin-*
+          path: sidecar-input
+          merge-multiple: true
+
+      - name: Create plugin sidecar build context
+        run: |
+          set -euo pipefail
+          mkdir -p sidecar-context/plugins
+          cp sidecar-input/plugins/*.zip sidecar-context/plugins/
+
+          cat > sidecar-context/Dockerfile <<'EOF'
+          FROM alpine:latest
+
+          # This image is a plugin source that can be mounted into OpenSearch Dashboards
+          # Mount /plugins to your OSD container's plugin directory
+          # Example: docker run -v xdr-plugins:/plugins opensearch-dashboards
+
+          COPY plugins/ /plugins/
+          RUN ls -lh /plugins/
+
+          ENTRYPOINT ["sh", "-c", "echo 'XDR plugin container mounted at /plugins' && tail -f /dev/null"]
+          EOF
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-platform plugin-only image
+        uses: docker/build-push-action@v6
+        with:
+          context: sidecar-context
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/xdr-plugins:${{ needs.metadata.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/xdr-plugins:latest
+
   publish-release:
     name: Publish GitHub release
-    needs: [metadata, bundle-assets, docker-image]
+    needs: [metadata, bundle-assets, docker-image, docker-plugin-sidecar]
     runs-on: ubuntu-latest
     permissions:
       contents: write

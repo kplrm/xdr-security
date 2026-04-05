@@ -52,59 +52,120 @@ See [docs/xdr-plugin-bundle-contract.md](docs/xdr-plugin-bundle-contract.md) for
 
 ## Deploy On Existing OpenSearch (Container-Based)
 
-### Option 1: Run the prebuilt XDR Dashboards image
+### Option 1: Run the prebuilt bundle image (simplest; tight OSD coupling)
 
-1. Pull the release image tag from the latest GitHub release.
-2. Update your Dashboards service image to that tag.
-3. Restart the Dashboards container.
+Use the complete OpenSearch Dashboards image with all four XDR plugins pre-installed.
 
-Example override:
+**Pros**: One image, nothing to configure.  
+**Cons**: You're locked to the specific OSD version in the bundle image; requires rebuilding for OSD updates.
+
+Example Docker Compose:
 
 ```yaml
 services:
   opensearch-dashboards:
-    image: ghcr.io/<org>/opensearch-dashboards-xdr-bundle:xdr-bundle-<timestamp>-<sha>
+    image: ghcr.io/<org>/opensearch-dashboards-xdr-bundle:xdr-240405-a1b2c3d
     ports:
       - "5601:5601"
     environment:
       OPENSEARCH_HOSTS: '["https://opensearch:9200"]'
 ```
 
-### Option 2: Install from bundle ZIPs into your own image
+### Option 2: Install plugins from bundle ZIPs into a custom OSD image
 
-1. Download `xdr-plugins_<tag>_osd-<version>.tar.gz` from the release.
-2. Extract it during your image build.
-3. Install each ZIP with `opensearch-dashboards-plugin install`.
+Download the plugin bundle tarball, extract ZIPs, and build your own OSD image with the exact version you need.
 
-Example Dockerfile fragment:
+**Pros**: Full control over OSD version; can use Dockerfile in CI/CD.  
+**Cons**: Requires building and maintaining an image per OSD version.
+
+Steps:
+
+1. Download `xdr-plugins_<tag>_osd-<version>.tar.gz` from [GitHub Releases](https://github.com/kplrm/xdr-security/releases).
+2. Extract: `tar -xz xdr-plugins_<tag>_osd-<version>.tar.gz`
+3. Build with Dockerfile:
 
 ```dockerfile
 FROM opensearchproject/opensearch-dashboards:3.5.0
 
-COPY plugins/*.zip /tmp/xdr-plugins/
+COPY xdr-security.zip xdr-coordinator.zip xdr-defense.zip xdr-visualizer.zip /tmp/plugins/
 RUN set -eux; \
-    for plugin in /tmp/xdr-plugins/*.zip; do \
+    for plugin in /tmp/plugins/*.zip; do \
       /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin install --allow-root "file://${plugin}"; \
-    done; \
-    rm -rf /tmp/xdr-plugins
+    done
 ```
 
-## Upgrade Strategy (Replace Bundle With New Version)
+### Option 3: Plugin-only sidecar image (recommended for decoupled OSD; new)
 
-Use immutable release tags for deterministic upgrades:
+Keep your existing OpenSearch Dashboards image unchanged. Mount a lightweight plugin-only container as a volume to inject plugins at runtime.
 
-1. Pick the target release tag from GitHub Releases.
-2. Update your Dashboards image tag from old bundle tag to new bundle tag.
-3. Recreate the Dashboards container (`docker compose up -d --force-recreate opensearch-dashboards`).
-4. Validate plugin load in logs and UI.
+**Pros**: Zero coupling to OSD version; upgrade OSD independently from plugins; works across all OSD releases.  
+**Cons**: Requires volume mount setup; slightly more complex than Option 1.
 
-Rollback is symmetric: redeploy the previous known-good bundle tag.
+Example Docker Compose:
 
-Recommended operational practices:
+```yaml
+services:
+  # Your existing OSD image, unchanged
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:3.5.0
+    ports:
+      - "5601:5601"
+    volumes:
+      - xdr-plugins:/usr/share/opensearch-dashboards/plugins  # Mount from sidecar
+    environment:
+      OPENSEARCH_HOSTS: '["https://opensearch:9200"]'
+    depends_on:
+      xdr-plugins-sidecar:
+        condition: service_completed_successfully
 
-- Promote tags across environments (`dev -> staging -> prod`) instead of rebuilding.
-- Keep at least one previous release available for rapid rollback.
-- Record deployed bundle tag with each environment change.
+  # Sidecar that provides plugins via volume
+  xdr-plugins-sidecar:
+    image: ghcr.io/<org>/xdr-plugins:xdr-240405-a1b2c3d
+    volumes:
+      - xdr-plugins:/plugins  # Volume is read from this container
+
+volumes:
+  xdr-plugins:
+```
+
+Then upgrade OSD and plugins independently:
+
+- **New OSD version**: Update `opensearch-dashboards` image tag; keep `xdr-plugins` unchanged.
+- **New plugins**: Update `xdr-plugins-sidecar` image tag; keep `opensearch-dashboards` unchanged.
+
+## Upgrade Strategy
+
+Each Option has a different upgrade path:
+
+### Option 1: Update the bundle image tag
+```bash
+# old: xdr-240405-a1b2c3d
+# new: xdr-240410-f5e6d7c
+docker compose pull
+docker compose up -d --force-recreate opensearch-dashboards
+```
+
+### Option 2: Build a new image with newer OSD + download fresh plugins
+```bash
+# Re-download ZIPs from release, rebuild Dockerfile with new OSD base
+docker build -t myrepo/osd-xdr:3.5.1 .
+docker compose up -d --force-recreate opensearch-dashboards
+```
+
+### Option 3: Update plugin sidecar (leaves OSD running)
+```bash
+# Plugins update independently
+docker compose up -d --force-recreate xdr-plugins-sidecar
+# Optional: restart OSD if plugins aren't hot-reloaded
+docker compose restart opensearch-dashboards
+```
+
+**Recommended operational practices**:
+- Use Option 3 if you need to decouple plugin and OSD release cycles.
+- Use Option 1 if you want the simplest single-image deployment.
+- Use Option 2 if you need to customize the OSD build.
+- Store release tags in your deployment manifests for reproducibility.
+- Keep at least one previous release available for quick rollback.
 
 ## Roadmap
 

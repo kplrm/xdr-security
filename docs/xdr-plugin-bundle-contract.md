@@ -19,11 +19,13 @@ This document is the source of truth for the multi-plugin release produced by `x
 
 ## Release Tag Format
 
-`xdr-bundle-<YYYYMMDDhhmmss UTC>-<short sha>`
+`xdr-<YYMMDD>-<sha7>`
 
 Examples:
+- `xdr-240405-a1b2c3d`
+- `xdr-240410-f5e6d7c`
 
-- `xdr-bundle-20260405103045-a1b2c3d`
+Tag format is deterministic: generated from UTC date + first 7 chars of commit SHA.
 
 ## Release Assets
 
@@ -51,7 +53,18 @@ For release tag `T` and OpenSearch Dashboards version `O`:
 - Version guard:
   - `package.json.version` must equal `opensearch_dashboards.json.version` for each plugin.
 
-## Container Image Contract
+## Smoke Testing Contract
+
+After all plugins are built, a platform matrix smoke test runs on the bundle image:
+
+- **Platforms**: Linux amd64, Linux arm64
+- **Distros**: Debian (stable-slim), AlmaLinux 9
+- **Test method**: Builds OSD from scratch in each test container, installs all plugin ZIPs, validates plugins are present.
+- **Purpose**: Ensure bundle artifacts work across Linux variants before publishing release.
+
+## Container Image Contracts
+
+### 1. Bundle image (OSD + plugins)
 
 - Image: `ghcr.io/<org>/opensearch-dashboards-xdr-bundle`
 - Tags published per release:
@@ -60,6 +73,24 @@ For release tag `T` and OpenSearch Dashboards version `O`:
 - Contents:
   - Official OpenSearch Dashboards base image for target version
   - All four plugin ZIPs installed via `opensearch-dashboards-plugin install --allow-root`
+
+### 2. Plugin-only sidecar image (new)
+
+- Image: `ghcr.io/<org>/xdr-plugins`
+- Tags published per release:
+  - `:<release-tag>` (immutable)
+  - `:latest` (moving pointer)
+- Contents:
+  - Minimal Alpine base image
+  - All four plugin ZIPs at `/plugins/`
+  - Designed to be mounted as a volume into an official OSD container
+- Use case: Decouples plugin upgrades from OSD version upgrades; allows using xdr-plugins with any OSD version.
+
+## Deployment Models
+
+- **Tight coupling**: Use `opensearch-dashboards-xdr-bundle` image directly; OSD and plugins upgrade together.
+- **Loose coupling**: Mount `xdr-plugins` sidecar volume into a separate, independently-versioned OSD container.
+- **Custom**: Download plugin bundle ZIPs and build your own image.
 
 ## Upgrade Contract
 
