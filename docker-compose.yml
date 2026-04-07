@@ -8,11 +8,16 @@ services:
       - discovery.type=single-node
       - cluster.name=opensearch-cluster
       - node.name=opensearch-node
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=SecureP@ssword1
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-SecureP@ssword1}
       - bootstrap.memory_lock=true
       - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
-      - DISABLE_INSTALL_DEMO_CONFIG=true
-      - DISABLE_SECURITY_PLUGIN=true
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - 9200:9200
+      - 9600:9600
+    networks:
+      - opensearch-net
     ulimits:
       memlock:
         soft: -1
@@ -26,13 +31,6 @@ services:
           memory: 4G
         reservations:
           memory: 2G
-    volumes:
-      - opensearch-data:/usr/share/opensearch/data
-    ports:
-      - 9200:9200
-      - 9600:9600
-    networks:
-      - opensearch-net
     logging:
       driver: "json-file"
       options:
@@ -46,6 +44,19 @@ services:
       - xdr-plugins:/plugins
     networks:
       - opensearch-net
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
     logging:
       driver: "json-file"
       options:
@@ -58,10 +69,11 @@ services:
     ports:
       - 5601:5601
     environment:
-      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+      - OPENSEARCH_USERNAME=${OPENSEARCH_USERNAME:-admin}
+      - OPENSEARCH_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-SecureP@ssword1}
     volumes:
       - xdr-plugins:/xdr-plugins:ro
-      - ./opensearch_dashboards.no-security.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
+      - ./opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
     networks:
       - opensearch-net
     depends_on:
@@ -69,6 +81,19 @@ services:
       - xdr-plugins-sidecar
     command: >
       sh -c 'for p in /xdr-plugins/*.zip; do [ -e "$$p" ] || break; /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin install --allow-root "file://$$p"; done; exec /usr/share/opensearch-dashboards/bin/opensearch-dashboards'
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
     logging:
       driver: "json-file"
       options:

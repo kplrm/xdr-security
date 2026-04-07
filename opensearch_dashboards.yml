@@ -1,0 +1,9 @@
+# OpenSearch Dashboards config for minimal security-enabled local development.
+# Credentials come from container environment variables in docker-compose.
+
+server.host: 0.0.0.0
+opensearch.hosts: ["https://opensearch-node:9200"]
+opensearch.ssl.verificationMode: none
+opensearch.username: "${OPENSEARCH_USERNAME}"
+opensearch.password: "${OPENSEARCH_PASSWORD}"
+opensearch.requestHeadersAllowlist: [authorization, securitytenant]

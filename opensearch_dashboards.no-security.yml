@@ -1,7 +1,0 @@
-# OpenSearch Dashboards config for clusters with Security plugin disabled.
-# Keep this file free of opensearch_security.* keys.
-
-server.host: 0.0.0.0
-opensearch.hosts: ["http://opensearch-node:9200"]
-opensearch.ssl.verificationMode: none
-opensearch.requestHeadersAllowlist: [authorization]

@@ -1,206 +1,141 @@
 # xdr-security
 
-OpenSearch Dashboards (OSD) plugin bundle for XDR (Extended Detection and Response).
+XDR plugin bundle for OpenSearch Dashboards.
 
-**Package Contents**: Four integrated plugins for fleet management, threat hunting, attack graph analysis, and threat intelligence.
-- `xdr-coordinator`: Agent fleet lifecycle and telemetry dashboards
-- `xdr-defense`: Detection and prevention rule management
-- `xdr-visualizer`: Attack-footprint investigation UI
-- `xdr-security`: Navigation wrapper (this repository)
+This repository is for adding XDR plugins to an existing OpenSearch + OpenSearch Dashboards deployment without repacking or rebuilding the Dashboards image.
 
-## Quick Start
+## What this repository provides
 
-Assuming you already have OpenSearch and OpenSearch Dashboards running:
+- `xdr-security` (navigation wrapper)
+- `xdr-coordinator` (agent fleet + telemetry operations)
+- `xdr-defense` (rule/hash/policy operations)
+- `xdr-visualizer` (investigation UI)
 
-### Option 1: Use the pre-built plugin container (simplest)
+## Authoritative test reference files
 
-Pull and run the plugin container, which will make plugins available via Docker volume:
+Use these files as the out-of-the-box baseline for local testing of all XDR plugins:
+
+- `docker-compose.yml`
+- `opensearch_dashboards.no-security.yml`
+
+The current compose setup is intentionally plugin-first:
+
+- Uses `ghcr.io/kplrm/xdr-plugins:latest` as an `xdr-plugins` sidecar volume source.
+- Uses the official `opensearchproject/opensearch-dashboards:latest` image.
+- Installs plugin zip files into Dashboards at container start.
+
+The current no-security Dashboards config sets:
+
+- `server.host`
+- `opensearch.hosts`
+- `opensearch.ssl.verificationMode: none`
+- `opensearch.requestHeadersAllowlist`
+- `opensearch_security.enabled: false`
+
+## Run (local test stack)
 
 ```bash
-# Run the plugin container in the background
-docker run -d --name xdr-plugins \
-  -v xdr-plugins:/plugins \
-  ghcr.io/kplrm/xdr-plugins:latest
-
-# Restart your Dashboards container to pick up plugins
-docker restart opensearch-dashboards
+cd xdr-security
+docker compose up -d
 ```
 
-In your Docker Compose for Dashboards, add the volume mount:
+Open Dashboards at `http://localhost:5601`.
 
-```yaml
-services:
-  opensearch-dashboards:
-    image: opensearchproject/opensearch-dashboards:3.5.0
-    ports:
-      - "5601:5601"
-    volumes:
-      - xdr-plugins:/usr/share/opensearch-dashboards/plugins
-    environment:
-      OPENSEARCH_HOSTS: '["https://opensearch:9200"]'
+## Verify plugin load
 
-volumes:
-  xdr-plugins:
+1. Confirm containers are healthy:
+
+```bash
+docker compose ps
 ```
 
-Then restart:
+2. Confirm plugin install happened during Dashboards startup:
+
+```bash
+docker logs opensearch-dashboards | grep -Ei "xdr-|plugin"
+```
+
+3. In the Dashboards UI, confirm the **XDR** navigation group appears with Coordinator, Defense, and Visualizer apps.
+
+## Install latest xdr-agent package (install only, no enrollment)
+
+Use the commands below to fetch the latest xdr-agent package directly from GitHub Releases and install the correct architecture automatically.
+
+Debian/Ubuntu (auto-detect `amd64` or `arm64`):
+
+```bash
+ARCH=$(dpkg --print-architecture)
+case "$ARCH" in amd64|arm64) ;; *) echo "Unsupported Debian arch: $ARCH"; exit 1 ;; esac
+ASSET_URL=$(curl -fsSL https://api.github.com/repos/kplrm/xdr-agent/releases/latest | grep -Eo "https://[^\"]+_${ARCH}\\.deb" | head -1)
+curl -fL "$ASSET_URL" -o "/tmp/xdr-agent_latest_${ARCH}.deb"
+sudo dpkg -i "/tmp/xdr-agent_latest_${ARCH}.deb"
+sudo systemctl stop xdr-agent || true
+sudo systemctl disable xdr-agent || true
+```
+
+CentOS/RHEL/Rocky/Alma (auto-detect `x86_64` or `aarch64`):
+
+```bash
+ARCH=$(uname -m)
+case "$ARCH" in x86_64|aarch64) ;; *) echo "Unsupported RPM arch: $ARCH"; exit 1 ;; esac
+ASSET_URL=$(curl -fsSL https://api.github.com/repos/kplrm/xdr-agent/releases/latest | grep -Eo "https://[^\"]+\\.${ARCH}\\.rpm" | head -1)
+curl -fL "$ASSET_URL" -o "/tmp/xdr-agent_latest_${ARCH}.rpm"
+sudo rpm -Uvh "/tmp/xdr-agent_latest_${ARCH}.rpm"
+sudo systemctl stop xdr-agent || true
+sudo systemctl disable xdr-agent || true
+```
+
+This keeps the step install-only (package present, not enrolled, and not running).
+
+## Troubleshooting
+
+### Hostname mismatch / TLS verification issues
+
+Symptoms: Dashboards cannot connect to OpenSearch with certificate or hostname errors.
+
+Actions:
+
+- Use the provided `opensearch_dashboards.no-security.yml` for local no-security testing.
+- Confirm `opensearch.ssl.verificationMode: none` is present in that file.
+- Confirm Dashboards is using that mounted config file.
+
+### Login screen appears unexpectedly
+
+Symptoms: Dashboards shows a login page even though local test mode is expected.
+
+Actions:
+
+- Confirm `opensearch_security.enabled: false` in `opensearch_dashboards.no-security.yml`.
+- Confirm Dashboards container has `DISABLE_SECURITY_DASHBOARDS_PLUGIN=true`.
+- Recreate containers after config changes:
 
 ```bash
 docker compose down
 docker compose up -d
 ```
 
-### Option 2: Use the all-in-one bundle image (single container)
+### Duplicate plugin registration after restarts
 
-If you don't mind using our specific OpenSearch Dashboards version:
+Symptoms: duplicate plugin errors or unstable plugin startup after repeated restarts.
 
-```bash
-# Replace your Dashboards with the bundle image
-docker run -d --name opensearch-dashboards \
-  -p 5601:5601 \
-  -e OPENSEARCH_HOSTS='["https://opensearch:9200"]' \
-  ghcr.io/kplrm/opensearch-dashboards-xdr-bundle:latest
-```
+Cause: plugins were reinstalled into an existing Dashboards container state.
 
-Or in Docker Compose:
-
-```yaml
-services:
-  opensearch-dashboards:
-    image: ghcr.io/kplrm/opensearch-dashboards-xdr-bundle:latest
-    ports:
-      - "5601:5601"
-    environment:
-      OPENSEARCH_HOSTS: '["https://opensearch:9200"]'
-```
-
-### Option 3: Manual install into your existing Dashboards image
-
-1. Download plugin ZIPs from [GitHub Releases](https://github.com/kplrm/xdr-security/releases):
-   ```bash
-   wget https://github.com/kplrm/xdr-security/releases/download/xdr-plugins-20260405/xdr-plugins_xdr-plugins-20260405_osd-3.5.0.tar.gz
-   tar -xz xdr-plugins_*.tar.gz
-   ```
-
-2. Install into your running Dashboards:
-   ```bash
-   docker exec opensearch-dashboards \
-     /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin install \
-     file:///path/to/xdr-coordinator.zip
-   
-   docker exec opensearch-dashboards \
-     /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin install \
-     file:///path/to/xdr-defense.zip
-   
-   docker exec opensearch-dashboards \
-     /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin install \
-     file:///path/to/xdr-security.zip
-   
-   docker exec opensearch-dashboards \
-     /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin install \
-     file:///path/to/xdr-visualizer.zip
-   ```
-
-3. Restart Dashboards:
-   ```bash
-   docker restart opensearch-dashboards
-   ```
-
-## Upgrade to Latest Release
-
-### Option 1 container (recommended for decoupled updates):
+Fix (clean recreate of Dashboards container):
 
 ```bash
-# Stop the old plugin container
-docker stop xdr-plugins
-docker rm xdr-plugins
-
-# Pull and run the new version
-docker run -d --name xdr-plugins \
-  -v xdr-plugins:/plugins \
-  ghcr.io/kplrm/xdr-plugins:latest
-
-# Restart Dashboards to pick up new plugins
-docker restart opensearch-dashboards
+docker compose stop opensearch-dashboards
+docker compose rm -f opensearch-dashboards
+docker compose up -d opensearch-dashboards
 ```
 
-### Option 2 container (all-in-one):
+If needed, fully recreate the stack:
 
 ```bash
-docker stop opensearch-dashboards
-docker rm opensearch-dashboards
-
-docker run -d --name opensearch-dashboards \
-  -p 5601:5601 \
-  -e OPENSEARCH_HOSTS='["https://opensearch:9200"]' \
-  ghcr.io/kplrm/opensearch-dashboards-xdr-bundle:latest
+docker compose down
+docker compose up -d
 ```
 
-### Manual install (Option 3):
+## Related docs
 
-Repeat the install steps above with new plugin ZIP files from the latest release.
-
-## Finding Your OpenSearch Info
-
-If you need to verify your cluster details before deploying:
-
-```bash
-# Endpoint (usually cluster host + port 9200)
-# Example: https://opensearch.example.com:9200
-
-# Dashboards endpoint
-# Example: https://opensearch-dashboards.example.com:5601
-
-# Can test connectivity with:
-curl -u admin:admin https://opensearch.example.com:9200 -k
-```
-
-## Verify Installation
-
-After containers restart, visit `http://localhost:5601` (or your Dashboards URL), then:
-
-1. Look for the **XDR** section in the left navigation
-2. You should see sub-items:
-   - **Coordinator**: Agent management and telemetry
-   - **Defense**: Rule and policy management
-   - **Visualizer**: Investigation UI
-
-If you don't see XDR apps, check Dashboards logs:
-
-```bash
-docker logs opensearch-dashboards
-```
-
-Look for errors related to plugin installation (e.g., "Failed to load plugin").
-
-## Supported Versions
-
-- **OpenSearch Dashboards**: 3.5.0 (see release notes for version compatibility)
-- **OpenSearch**: 3.5.0+
-- **Architectures**: Linux x86_64, ARM64
-
-## Support & Documentation
-
-- [Architecture & API docs](docs/xdr-plugin-bundle-contract.md)
-- [Release history](https://github.com/kplrm/xdr-security/releases)
-- [Main workspace README](../README.md)
-
-## For Developers
-
-To build plugins locally:
-
-```bash
-cd xdr-security
-yarn build --opensearch-dashboards-version 3.5.0
-
-cd ../xdr-coordinator
-yarn build --opensearch-dashboards-version 3.5.0
-
-cd ../xdr-defense
-yarn build --opensearch-dashboards-version 3.5.0
-
-cd ../xdr-visualizer
-yarn build --opensearch-dashboards-version 3.5.0
-```
-
-See individual plugin READMEs for development setup.
+- Plugin bundle contract: `docs/xdr-plugin-bundle-contract.md`
+- Workspace overview: `../README.md`
