@@ -7,3 +7,4 @@ opensearch.ssl.verificationMode: none
 opensearch.username: "${OPENSEARCH_USERNAME}"
 opensearch.password: "${OPENSEARCH_PASSWORD}"
 opensearch.requestHeadersAllowlist: [authorization, securitytenant]
+logging.quiet: true
