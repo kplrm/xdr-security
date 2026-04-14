@@ -10,9 +10,15 @@ services:
       - node.name=opensearch-node
       - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-SecureP@ssword1}
       - bootstrap.memory_lock=true
+      - logger.level=error
       - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
     volumes:
       - opensearch-data:/usr/share/opensearch/data
+      - ./config/certs/kirk.pem:/usr/share/opensearch/config/kirk.pem
+      - ./config/certs/kirk-key.pem:/usr/share/opensearch/config/kirk-key.pem
+      - ./config/certs/root-ca.pem:/usr/share/opensearch/config/root-ca.pem
+      - ./config/performance-analyzer.properties:/usr/share/opensearch/config/opensearch-performance-analyzer/performance-analyzer.properties:ro
+      - ./config/plugin-stats-metadata:/usr/share/opensearch/config/opensearch-performance-analyzer/plugin-stats-metadata:ro
     ports:
       - 9200:9200
       - 9600:9600
@@ -36,6 +42,32 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  opensearch-init:
+    image: opensearchproject/opensearch:latest
+    container_name: opensearch-init
+    depends_on:
+      - opensearch-node
+    networks:
+      - opensearch-net
+    entrypoint: >
+      bash -c '
+        echo "Waiting for OpenSearch...";
+        until curl -k https://opensearch-node:9200 >/dev/null 2>&1; do
+          sleep 5;
+        done;
+
+        echo "Running securityadmin...";
+        /usr/share/opensearch/plugins/opensearch-security/tools/securityadmin.sh \
+          -cd /usr/share/opensearch/config/opensearch-security \
+          -icl \
+          -key /usr/share/opensearch/config/kirk-key.pem \
+          -cert /usr/share/opensearch/config/kirk.pem \
+          -cacert /usr/share/opensearch/config/root-ca.pem \
+          -nhnv;
+
+        echo "Security initialized.";
+      '
 
   xdr-plugins-sidecar:
     image: ghcr.io/kplrm/xdr-plugins:latest
@@ -73,11 +105,12 @@ services:
       - OPENSEARCH_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-SecureP@ssword1}
     volumes:
       - xdr-plugins:/xdr-plugins:ro
-      - ./opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
+      - ./config/opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
     networks:
       - opensearch-net
     depends_on:
       - opensearch-node
+      - opensearch-init
       - xdr-plugins-sidecar
     command: >
       sh -c 'for p in /xdr-plugins/*.zip; do [ -e "$$p" ] || break; /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin install --allow-root "file://$$p"; done; exec /usr/share/opensearch-dashboards/bin/opensearch-dashboards'
