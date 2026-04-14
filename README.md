@@ -9,6 +9,7 @@ This repository is for adding XDR plugins to an existing OpenSearch + OpenSearch
 - `xdr-security` (navigation wrapper)
 - `xdr-coordinator` (agent fleet + telemetry operations)
 - `xdr-defense` (rule/hash/policy operations)
+- `xdr-sentry` (security monitoring and response workflows)
 - `xdr-visualizer` (investigation UI)
 
 ## Authoritative test reference files
@@ -55,7 +56,7 @@ docker compose ps
 docker logs opensearch-dashboards | grep -Ei "xdr-|plugin"
 ```
 
-3. In the Dashboards UI, confirm the **XDR** navigation group appears with Coordinator, Defense, and Visualizer apps.
+3. In the Dashboards UI, confirm the **XDR Security** navigation group appears with Coordinator, Defense, Sentry, and Visualizer apps.
 
 ## Install latest xdr-agent package (install only, no enrollment)
 

@@ -12,6 +12,7 @@ env:
   OPENSEARCH_DASHBOARDS_REF: 3.5.0
   XDR_COORDINATOR_REPOSITORY: ${{ github.repository_owner }}/xdr-coordinator
   XDR_DEFENSE_REPOSITORY: ${{ github.repository_owner }}/xdr-defense
+  XDR_SENTRY_REPOSITORY: ${{ github.repository_owner }}/xdr-sentry
   XDR_VISUALIZER_REPOSITORY: ${{ github.repository_owner }}/xdr-visualizer
 
 jobs:
@@ -54,6 +55,8 @@ jobs:
             repository: ${{ github.repository_owner }}/xdr-coordinator
           - plugin: xdr-defense
             repository: ${{ github.repository_owner }}/xdr-defense
+          - plugin: xdr-sentry
+            repository: ${{ github.repository_owner }}/xdr-sentry
           - plugin: xdr-visualizer
             repository: ${{ github.repository_owner }}/xdr-visualizer
 

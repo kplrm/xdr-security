@@ -1,7 +1,7 @@
-// The XDR Security nav group ("XDR Security" category header with XDR Defense and
-// XDR Coordinator links) is fully owned by the xdr-defense and xdr-coordinator plugins,
-// which both register their apps under category id 'xdrSecurity'. This wrapper plugin
-// no longer registers its own overview page so the nav shows only the two useful apps.
+// The XDR Security nav group is owned by the XDR app plugins that register under
+// category id 'xdrSecurity' (for example xdr-coordinator, xdr-defense,
+// xdr-sentry, and xdr-visualizer). This wrapper plugin does not register its own
+// overview page; it only preserves the bundle-level plugin identity.
 
 export function createXdrSecurityPlugin() {
   return {

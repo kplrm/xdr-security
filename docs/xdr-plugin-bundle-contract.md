@@ -9,6 +9,7 @@ This document is the source of truth for the multi-plugin release produced by `x
   - `xdr-security`
   - `xdr-coordinator`
   - `xdr-defense`
+  - `xdr-sentry`
   - `xdr-visualizer`
 
 ## Triggering
@@ -32,10 +33,11 @@ Tag format is deterministic: generated from UTC date at release time.
 For release tag `T` and OpenSearch Dashboards version `O`:
 
 - `xdr-plugins_T_osd-O.tar.gz`
-  - tarball containing 4 ZIP files:
+  - tarball containing 5 ZIP files:
     - `xdr-security.zip`
     - `xdr-coordinator.zip`
     - `xdr-defense.zip`
+    - `xdr-sentry.zip`
     - `xdr-visualizer.zip`
 - `xdr-plugins_T_osd-O.sha256`
   - SHA256 for each ZIP in the tarball
@@ -72,7 +74,7 @@ After all plugins are built, a platform matrix smoke test runs on the bundle ima
   - `:latest` (moving pointer)
 - Contents:
   - Official OpenSearch Dashboards base image for target version
-  - All four plugin ZIPs installed via `opensearch-dashboards-plugin install --allow-root`
+  - All five plugin ZIPs installed via `opensearch-dashboards-plugin install --allow-root`
 
 ### 2. Plugin-only sidecar image (new)
 
@@ -82,7 +84,7 @@ After all plugins are built, a platform matrix smoke test runs on the bundle ima
   - `:latest` (moving pointer)
 - Contents:
   - Minimal Alpine base image
-  - All four plugin ZIPs at `/plugins/`
+  - All five plugin ZIPs at `/plugins/`
   - Designed to be mounted as a volume into an official OSD container
 - Use case: Decouples plugin upgrades from OSD version upgrades; allows using xdr-plugins with any OSD version.
 
