@@ -14,9 +14,6 @@ services:
       - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
     volumes:
       - opensearch-data:/usr/share/opensearch/data
-      - ./config/certs/kirk.pem:/usr/share/opensearch/config/kirk.pem
-      - ./config/certs/kirk-key.pem:/usr/share/opensearch/config/kirk-key.pem
-      - ./config/certs/root-ca.pem:/usr/share/opensearch/config/root-ca.pem
       - ./config/performance-analyzer.properties:/usr/share/opensearch/config/opensearch-performance-analyzer/performance-analyzer.properties:ro
       - ./config/plugin-stats-metadata:/usr/share/opensearch/config/opensearch-performance-analyzer/plugin-stats-metadata:ro
     ports:
@@ -42,31 +39,56 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "curl -k -s -u admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-SecureP@ssword1} https://localhost:9200/_cluster/health >/dev/null"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
 
   opensearch-init:
     image: opensearchproject/opensearch:latest
     container_name: opensearch-init
     depends_on:
-      - opensearch-node
+      opensearch-node:
+        condition: service_healthy
+    environment:
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-SecureP@ssword1}
     networks:
       - opensearch-net
     entrypoint: >
       bash -c '
-        echo "Waiting for OpenSearch...";
-        until curl -k https://opensearch-node:9200 >/dev/null 2>&1; do
+        set -euo pipefail;
+
+        echo "Preparing demo security certificates and config...";
+        /usr/share/opensearch/plugins/opensearch-security/tools/install_demo_configuration.sh -y;
+
+        echo "Waiting for OpenSearch TCP port...";
+        until curl -k --silent https://opensearch-node:9200 >/dev/null; do
+          echo "HTTP not ready yet...";
           sleep 5;
         done;
 
-        echo "Running securityadmin...";
+        echo "Port is open. Running securityadmin immediately...";
         /usr/share/opensearch/plugins/opensearch-security/tools/securityadmin.sh \
           -cd /usr/share/opensearch/config/opensearch-security \
           -icl \
+          -nhnv \
+          -h opensearch-node \
+          -p 9200 \
           -key /usr/share/opensearch/config/kirk-key.pem \
           -cert /usr/share/opensearch/config/kirk.pem \
-          -cacert /usr/share/opensearch/config/root-ca.pem \
-          -nhnv;
+          -cacert /usr/share/opensearch/config/root-ca.pem;
 
-        echo "Security initialized.";
+        echo "Security initialized. Now waiting for cluster health...";
+        until curl -k -u admin:$${OPENSEARCH_INITIAL_ADMIN_PASSWORD} https://opensearch-node:9200/_cluster/health | grep -E "green|yellow"; do
+          echo "Cluster still stabilizing...";
+          sleep 5;
+        done;
+
+        echo "Cluster is ready.";
       '
 
   xdr-plugins-sidecar:
@@ -109,9 +131,12 @@ services:
     networks:
       - opensearch-net
     depends_on:
-      - opensearch-node
-      - opensearch-init
-      - xdr-plugins-sidecar
+      opensearch-node:
+        condition: service_healthy
+      opensearch-init:
+        condition: service_completed_successfully
+      xdr-plugins-sidecar:
+        condition: service_started
     command: >
       sh -c 'for p in /xdr-plugins/*.zip; do [ -e "$$p" ] || break; /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin install --allow-root "file://$$p"; done; exec /usr/share/opensearch-dashboards/bin/opensearch-dashboards'
     ulimits:
