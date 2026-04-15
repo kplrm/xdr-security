@@ -4,6 +4,7 @@ services:
   opensearch-node:
     image: opensearchproject/opensearch:latest
     container_name: opensearch-node
+    restart: unless-stopped
     environment:
       - discovery.type=single-node
       - cluster.name=opensearch-cluster
@@ -94,6 +95,7 @@ services:
   xdr-plugins-sidecar:
     image: ghcr.io/kplrm/xdr-plugins:latest
     container_name: xdr-plugins
+    restart: unless-stopped
     volumes:
       - xdr-plugins:/plugins
     networks:
@@ -120,6 +122,7 @@ services:
   opensearch-dashboards:
     image: opensearchproject/opensearch-dashboards:latest
     container_name: opensearch-dashboards
+    restart: unless-stopped
     ports:
       - 5601:5601
     environment:
