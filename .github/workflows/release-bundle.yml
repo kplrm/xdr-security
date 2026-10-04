@@ -12,7 +12,6 @@ env:
   OPENSEARCH_DASHBOARDS_REF: 3.5.0
   XDR_COORDINATOR_REPOSITORY: ${{ github.repository_owner }}/xdr-coordinator
   XDR_DEFENSE_REPOSITORY: ${{ github.repository_owner }}/xdr-defense
-  XDR_SENTRY_REPOSITORY: ${{ github.repository_owner }}/xdr-sentry
   XDR_VISUALIZER_REPOSITORY: ${{ github.repository_owner }}/xdr-visualizer
 
 jobs:
@@ -55,8 +54,6 @@ jobs:
             repository: ${{ github.repository_owner }}/xdr-coordinator
           - plugin: xdr-defense
             repository: ${{ github.repository_owner }}/xdr-defense
-          - plugin: xdr-sentry
-            repository: ${{ github.repository_owner }}/xdr-sentry
           - plugin: xdr-visualizer
             repository: ${{ github.repository_owner }}/xdr-visualizer
 
@@ -103,6 +100,20 @@ jobs:
       - name: Bootstrap OpenSearch Dashboards
         working-directory: opensearch-dashboards
         run: yarn osd bootstrap --single-version=loose || yarn osd bootstrap --single-version=loose
+
+      - name: Fetch matching installed-rule catalog
+        if: matrix.plugin == 'xdr-defense'
+        run: |
+          curl --fail --location --retry 3 \
+            "https://github.com/${{ github.repository_owner }}/xdr-agent/releases/latest/download/catalog.json" \
+            --output sources/xdr-defense/server/data/yara-core-linux.json
+
+      - name: Test component contracts
+        if: matrix.plugin == 'xdr-defense' || matrix.plugin == 'xdr-coordinator'
+        env:
+          OSD_ROOT: ${{ github.workspace }}/opensearch-dashboards
+        run: |
+          NODE_PATH="${OSD_ROOT}/node_modules" node --test sources/${{ matrix.plugin }}/scripts/test_*.cjs
 
       - name: Resolve plugin source path
         id: src
