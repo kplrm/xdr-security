@@ -57,7 +57,7 @@ Edit `/tmp/dashboards-values.yaml`: update `image` and `plugins.enabled`, and ap
 ```yaml
 image:
   repository: ghcr.io/kplrm/opensearch-dashboards-xdr-bundle
-  tag: "XDR_BUNDLE_TAG-osd-3.9.0"
+  tag: "xdr-plugins-20261014-23-osd-3.9.0"
 extraEnvs:
   # Keep existing entries here, then add:
   - name: XDR_NAVIGATOR_ENCRYPTION_KEY
@@ -71,12 +71,15 @@ If the encryption key is already supplied (including through `envFrom`), retain 
 
 ```bash
 helm upgrade opensearch-dashboards opensearch/opensearch-dashboards -n "$NAMESPACE" \
-  --version 3.9.0 -f /tmp/dashboards-values.yaml --atomic --wait --timeout 10m
+  --version 3.9.0 -f /tmp/dashboards-values.yaml \
+  --rollback-on-failure --wait --timeout 5m --debug
 ```
 
-These commands use your manual's release name `opensearch-dashboards` and chart/Dashboards version `3.9.0`. For other installations, find the release and chart version with `helm -n "$NAMESPACE" list`; match the bundle's `osd-…` suffix to your exact Dashboards version. Keep required registry pull credentials.
+In a new terminal, inspect the logs:
 
-For other charts/manifests/operators, set the same image and Secret-backed encryption variable. Preserve required custom plugins with a [custom image](deploy/Dockerfile).
+```bash
+kubectl -n opensearch logs deploy/opensearch-dashboards -f
+```
 
 Sign in with `xdr_security` and check the apps and Dashboards logs. XDR defaults to zero index replicas and 90-day retention. Snapshot before upgrades; Helm rollback restores configuration, not OpenSearch data.
 
