@@ -8,6 +8,19 @@ if [[ ! -f "${OSD_SOURCE}/scripts/plugin_helpers.js" ]]; then
   echo "Dashboards build checkout is unavailable: ${OSD_SOURCE}" >&2
   exit 1
 fi
+SOURCE_VERSION="$(node -p "require(process.argv[1]).version" "${OSD_SOURCE}/package.json")"
+TARGET_VERSION="${SOURCE_VERSION}"
+BUILD_ARGS=("$@")
+for ((i=0; i<${#BUILD_ARGS[@]}; i++)); do
+  case "${BUILD_ARGS[i]}" in
+    --opensearch-dashboards-version=*) TARGET_VERSION="${BUILD_ARGS[i]#*=}" ;;
+    --opensearch-dashboards-version) TARGET_VERSION="${BUILD_ARGS[i+1]:-}" ;;
+  esac
+done
+if [[ "${TARGET_VERSION}" != "${SOURCE_VERSION}" ]]; then
+  echo "Dashboards source is ${SOURCE_VERSION}, requested build is ${TARGET_VERSION}; use an exact-version OSD_ROOT" >&2
+  exit 1
+fi
 if [[ -f "${ROOT_DIR}/scripts/test_api.cjs" ]]; then node --test "${ROOT_DIR}/scripts/test_api.cjs"; fi
 if [[ -f "${ROOT_DIR}/scripts/test_inventory.cjs" ]]; then node --test "${ROOT_DIR}/scripts/test_inventory.cjs"; fi
 if [[ -n "${XDR_BUILD_WORKSPACE:-}" ]]; then
@@ -28,6 +41,11 @@ tar -C "${OSD_SOURCE}" --exclude='./.git' --exclude='./plugins' --exclude='./bui
 git -C "${BUILD_OSD}" init -q
 git -C "${BUILD_OSD}" add -A
 git -C "${BUILD_OSD}" -c core.hooksPath=/dev/null -c user.name='XDR local build' -c user.email='build@localhost' commit -qm 'Disposable build source'
+fi
+STAGED_VERSION="$(node -p "require(process.argv[1]).version" "${BUILD_OSD}/package.json")"
+if [[ "${STAGED_VERSION}" != "${TARGET_VERSION}" ]]; then
+  echo "Existing build workspace is ${STAGED_VERSION}; choose a fresh XDR_BUILD_WORKSPACE for ${TARGET_VERSION}" >&2
+  exit 1
 fi
 PLUGIN_DIR="${BUILD_OSD}/plugins/${PLUGIN_NAME}"
 rm -rf "${PLUGIN_DIR}"

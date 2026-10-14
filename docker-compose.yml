@@ -2,7 +2,7 @@
 ## This is for demonstration and testing purposes only. Do not use this configuration in production environments.
 services:
   opensearch-node:
-    image: opensearchproject/opensearch:latest
+    image: opensearchproject/opensearch:3.5.0
     container_name: opensearch-node
     restart: unless-stopped
     environment:
@@ -50,7 +50,7 @@ services:
       start_period: 40s
 
   opensearch-init:
-    image: opensearchproject/opensearch:latest
+    image: opensearchproject/opensearch:3.5.0
     container_name: opensearch-init
     depends_on:
       opensearch-node:
@@ -93,7 +93,7 @@ services:
       '
 
   xdr-plugins-sidecar:
-    image: ghcr.io/kplrm/xdr-plugins:latest
+    image: ghcr.io/kplrm/xdr-plugins:latest-osd-3.5.0
     container_name: xdr-plugins
     restart: unless-stopped
     volumes:
@@ -120,7 +120,7 @@ services:
         max-file: "3"
 
   opensearch-dashboards:
-    image: opensearchproject/opensearch-dashboards:latest
+    image: opensearchproject/opensearch-dashboards:3.5.0
     container_name: opensearch-dashboards
     restart: unless-stopped
     ports:
@@ -128,6 +128,7 @@ services:
     environment:
       - OPENSEARCH_USERNAME=${OPENSEARCH_USERNAME:-admin}
       - OPENSEARCH_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-SecureP@ssword1}
+      - XDR_NAVIGATOR_ENCRYPTION_KEY=${XDR_NAVIGATOR_ENCRYPTION_KEY:?Set a stable secret of at least 32 characters}
     volumes:
       - xdr-plugins:/xdr-plugins:ro
       - ./config/opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro

@@ -3,16 +3,23 @@ name: XDR Plugin Bundle Release
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xdr-release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   OPENSEARCH_DASHBOARDS_REPOSITORY: opensearch-project/OpenSearch-Dashboards
-  OPENSEARCH_DASHBOARDS_VERSION: 3.5.0
-  OPENSEARCH_DASHBOARDS_REF: 3.5.0
   XDR_COORDINATOR_REPOSITORY: ${{ github.repository_owner }}/xdr-coordinator
   XDR_DEFENSE_REPOSITORY: ${{ github.repository_owner }}/xdr-defense
   XDR_VISUALIZER_REPOSITORY: ${{ github.repository_owner }}/xdr-visualizer
+  XDR_NAVIGATOR_REPOSITORY: ${{ github.repository_owner }}/xdr-navigator
 
 jobs:
   metadata:
@@ -20,42 +27,37 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
-      bundle: ${{ steps.meta.outputs.bundle }}
-      checksums: ${{ steps.meta.outputs.checksums }}
-      manifest: ${{ steps.meta.outputs.manifest }}
-      compose: ${{ steps.meta.outputs.compose }}
+      sources: ${{ steps.meta.outputs.sources }}
+      catalog_tag: ${{ steps.meta.outputs.catalog_tag }}
     steps:
       - name: Compute release metadata
         id: meta
+        env:
+          GH_TOKEN: ${{ secrets.XDR_SOURCE_TOKEN || github.token }}
         run: |
           set -euo pipefail
-          TAG="xdr-plugins-$(date -u +%Y%m%d)"
-          BUNDLE="xdr-plugins_${TAG}_osd-${{ env.OPENSEARCH_DASHBOARDS_VERSION }}.tar.gz"
-          CHECKSUMS="xdr-plugins_${TAG}_osd-${{ env.OPENSEARCH_DASHBOARDS_VERSION }}.sha256"
-          MANIFEST="xdr-plugins_${TAG}_manifest.json"
-          COMPOSE="docker-compose.xdr-plugins.${TAG}.yml"
-
+          TAG="xdr-plugins-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "bundle=${BUNDLE}" >> "$GITHUB_OUTPUT"
-          echo "checksums=${CHECKSUMS}" >> "$GITHUB_OUTPUT"
-          echo "manifest=${MANIFEST}" >> "$GITHUB_OUTPUT"
-          echo "compose=${COMPOSE}" >> "$GITHUB_OUTPUT"
+          SOURCES='{}'
+          for plugin in xdr-coordinator xdr-defense xdr-visualizer xdr-navigator; do
+            REPO="${GITHUB_REPOSITORY_OWNER}/${plugin}"
+            BRANCH=$(gh api "repos/${REPO}" --jq .default_branch)
+            SHA=$(gh api "repos/${REPO}/commits/${BRANCH}" --jq .sha)
+            SOURCES=$(jq -c --arg plugin "$plugin" --arg sha "$SHA" '. + {($plugin): $sha}' <<< "$SOURCES")
+          done
+          echo "sources=${SOURCES}" >> "$GITHUB_OUTPUT"
+          CATALOG_TAG=$(gh api "repos/${GITHUB_REPOSITORY_OWNER}/xdr-agent/releases/latest" --jq .tag_name)
+          echo "catalog_tag=${CATALOG_TAG}" >> "$GITHUB_OUTPUT"
 
   build-plugin:
     name: Build ${{ matrix.plugin }} ZIP
+    needs: metadata
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - plugin: xdr-security
-            repository: ''
-          - plugin: xdr-coordinator
-            repository: ${{ github.repository_owner }}/xdr-coordinator
-          - plugin: xdr-defense
-            repository: ${{ github.repository_owner }}/xdr-defense
-          - plugin: xdr-visualizer
-            repository: ${{ github.repository_owner }}/xdr-visualizer
+        osd_version: [3.5.0, 3.6.0, 3.7.0, 3.8.0, 3.9.0]
+        plugin: [xdr-security, xdr-coordinator, xdr-defense, xdr-visualizer, xdr-navigator]
 
     permissions:
       contents: read
@@ -65,19 +67,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: sources/xdr-security
+          ref: ${{ github.sha }}
 
       - name: Checkout external plugin repo
-        if: matrix.repository != ''
+        if: matrix.plugin != 'xdr-security'
         uses: actions/checkout@v4
         with:
-          repository: ${{ matrix.repository }}
+          repository: ${{ github.repository_owner }}/${{ matrix.plugin }}
+          ref: ${{ fromJSON(needs.metadata.outputs.sources)[matrix.plugin] }}
+          token: ${{ secrets.XDR_SOURCE_TOKEN || github.token }}
           path: sources/${{ matrix.plugin }}
 
       - name: Checkout OpenSearch Dashboards
         uses: actions/checkout@v4
         with:
           repository: ${{ env.OPENSEARCH_DASHBOARDS_REPOSITORY }}
-          ref: ${{ env.OPENSEARCH_DASHBOARDS_REF }}
+          ref: ${{ matrix.osd_version }}
           path: opensearch-dashboards
 
       - name: Setup Node
@@ -103,13 +108,16 @@ jobs:
 
       - name: Fetch matching installed-rule catalog
         if: matrix.plugin == 'xdr-defense'
+        env:
+          GH_TOKEN: ${{ secrets.XDR_SOURCE_TOKEN || github.token }}
+          CATALOG_TAG: ${{ needs.metadata.outputs.catalog_tag }}
         run: |
-          curl --fail --location --retry 3 \
-            "https://github.com/${{ github.repository_owner }}/xdr-agent/releases/latest/download/catalog.json" \
-            --output sources/xdr-defense/server/data/yara-core-linux.json
+          gh release download "$CATALOG_TAG" --repo "${GITHUB_REPOSITORY_OWNER}/xdr-agent" \
+            --pattern catalog.json --dir rule-catalog
+          cp rule-catalog/catalog.json sources/xdr-defense/server/data/yara-core-linux.json
 
       - name: Test component contracts
-        if: matrix.plugin == 'xdr-defense' || matrix.plugin == 'xdr-coordinator'
+        if: matrix.plugin == 'xdr-security' || matrix.plugin == 'xdr-defense' || matrix.plugin == 'xdr-coordinator' || matrix.plugin == 'xdr-navigator'
         env:
           OSD_ROOT: ${{ github.workspace }}/opensearch-dashboards
         run: |
@@ -132,6 +140,8 @@ jobs:
             --exclude='.git' \
             --exclude='build' \
             --exclude='node_modules' \
+            --exclude='.yarn' \
+            --exclude='.pnp.*' \
             --exclude='opensearch-dashboards' \
             --exclude='sources' \
             "${{ steps.src.outputs.path }}/" "opensearch-dashboards/plugins/${{ matrix.plugin }}/"
@@ -149,7 +159,7 @@ jobs:
 
       - name: Build plugin ZIP
         working-directory: opensearch-dashboards/plugins/${{ matrix.plugin }}
-        run: node ../../scripts/plugin_helpers build --opensearch-dashboards-version=${{ env.OPENSEARCH_DASHBOARDS_VERSION }}
+        run: node ../../scripts/plugin_helpers build --opensearch-dashboards-version=${{ matrix.osd_version }}
 
       - name: Collect plugin artifact
         run: |
@@ -172,14 +182,17 @@ jobs:
             "repo": "${{ matrix.plugin }}",
             "pluginId": "${PLUGIN_ID}",
             "version": "${PACKAGE_VERSION}",
-            "osdVersion": "${{ env.OPENSEARCH_DASHBOARDS_VERSION }}"
+            "osdVersion": "${{ matrix.osd_version }}",
+            "sourceCommit": "$(git -C "${{ steps.src.outputs.path }}" rev-parse HEAD)",
+            "dashboardsCommit": "$(git -C opensearch-dashboards rev-parse HEAD)",
+            "ruleCatalogRelease": "${{ needs.metadata.outputs.catalog_tag }}"
           }
           EOF
 
       - name: Upload plugin artifact bundle
         uses: actions/upload-artifact@v4
         with:
-          name: plugin-${{ matrix.plugin }}
+          name: plugin-${{ matrix.plugin }}-osd-${{ matrix.osd_version }}
           path: out/
           retention-days: 2
 
@@ -187,14 +200,18 @@ jobs:
     name: Bundle release artifacts
     needs: [metadata, build-plugin]
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        osd_version: [3.5.0, 3.6.0, 3.7.0, 3.8.0, 3.9.0]
     permissions:
       contents: read
 
     steps:
+      - uses: actions/checkout@v4
       - name: Download all plugin artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: plugin-*
+          pattern: plugin-*-osd-${{ matrix.osd_version }}
           path: release-artifacts/raw
           merge-multiple: true
 
@@ -209,31 +226,31 @@ jobs:
         run: |
           set -euo pipefail
           jq -s \
-            --arg osd "${{ env.OPENSEARCH_DASHBOARDS_VERSION }}" \
+            --arg osd "${{ matrix.osd_version }}" \
             --arg tag "${{ needs.metadata.outputs.tag }}" \
             '{releaseTag: $tag, opensearchDashboardsVersion: $osd, plugins: .}' \
-            release-artifacts/meta/*.json > "release-artifacts/${{ needs.metadata.outputs.manifest }}"
+            release-artifacts/meta/*.json > "release-artifacts/xdr-plugins_${{ needs.metadata.outputs.tag }}_osd-${{ matrix.osd_version }}_manifest.json"
 
       - name: Generate checksums
         run: |
           set -euo pipefail
           (
             cd release-artifacts/plugins
-            sha256sum *.zip > "../${{ needs.metadata.outputs.checksums }}"
+            sha256sum *.zip > "../xdr-plugins_${{ needs.metadata.outputs.tag }}_osd-${{ matrix.osd_version }}.sha256"
           )
 
       - name: Create plugin bundle tarball
         run: |
           set -euo pipefail
-          tar -czf "release-artifacts/${{ needs.metadata.outputs.bundle }}" -C release-artifacts/plugins .
+          tar -czf "release-artifacts/xdr-plugins_${{ needs.metadata.outputs.tag }}_osd-${{ matrix.osd_version }}.tar.gz" -C release-artifacts/plugins .
 
       - name: Generate compose override asset
         run: |
           set -euo pipefail
-          cat > "release-artifacts/${{ needs.metadata.outputs.compose }}" <<EOF
+          cat > "release-artifacts/docker-compose.xdr-plugins.${{ needs.metadata.outputs.tag }}.osd-${{ matrix.osd_version }}.yml" <<EOF
           services:
             opensearch-dashboards:
-              image: ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:${{ needs.metadata.outputs.tag }}
+              image: ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:${{ needs.metadata.outputs.tag }}-osd-${{ matrix.osd_version }}
               ports:
                 - "5601:5601"
               environment:
@@ -243,83 +260,48 @@ jobs:
       - name: Upload release assets artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bundle-assets
+          name: bundle-assets-osd-${{ matrix.osd_version }}
           path: release-artifacts/
           retention-days: 2
 
   smoke-test:
-    name: "[${{ matrix.os }}/${{ matrix.arch }}] smoke test bundle image"
+    name: Verify five plugin ZIPs for OSD ${{ matrix.osd_version }}
     needs: [metadata, build-plugin]
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
-        include:
-          - os: debian
-            arch: amd64
-            test_image: debian:stable-slim
-            platform: linux/amd64
-          - os: debian
-            arch: arm64
-            test_image: debian:stable-slim
-            platform: linux/arm64
-          - os: centos
-            arch: amd64
-            test_image: almalinux:9
-            platform: linux/amd64
-          - os: centos
-            arch: arm64
-            test_image: almalinux:9
-            platform: linux/arm64
-
+        osd_version: [3.5.0, 3.6.0, 3.7.0, 3.8.0, 3.9.0]
     steps:
-      - name: Set up QEMU (arm64 only)
-        if: matrix.arch == 'arm64'
-        uses: docker/setup-qemu-action@v3
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          platforms: arm64
-
-      - name: Download all plugin artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: plugin-*
+          pattern: plugin-*-osd-${{ matrix.osd_version }}
           path: plugins-input
           merge-multiple: true
-        continue-on-error: true
-
-      - name: Verify plugin artifacts exist
+      - name: Verify complete bundle and ZIP metadata
         run: |
-          set -euo pipefail
-          if [ ! -d plugins-input/plugins ]; then
-            echo "ERROR: plugins directory not found!"
-            find plugins-input -type f -name '*.zip' || echo "No ZIPs found"
-            exit 1
-          fi
-          echo "Plugin artifacts found:"
-          ls -lh plugins-input/plugins/
-          echo "Total size: $(du -sh plugins-input/plugins/)"
-
-      - name: Echo test completion
-        run: |
-          echo "✓ Smoke test passed for ${{ matrix.os }}/${{ matrix.arch }}"
-          echo "Verified: plugin ZIPs are accessible and properly staged"
+          python3 -m unittest discover -s tests -v
+          python3 scripts/verify_bundle.py plugins-input ${{ matrix.osd_version }}
 
   docker-image:
     name: Build and publish bundle image
     needs: [metadata, build-plugin, smoke-test]
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        osd_version: [3.5.0, 3.6.0, 3.7.0, 3.8.0, 3.9.0]
     permissions:
       contents: read
       packages: write
 
     steps:
+      - uses: actions/checkout@v4
       - name: Download all plugin artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: plugin-*
+          pattern: plugin-*-osd-${{ matrix.osd_version }}
           path: docker-input
           merge-multiple: true
-        continue-on-error: true
 
       - name: Create Docker build context
         run: |
@@ -327,16 +309,15 @@ jobs:
           mkdir -p docker-context/plugins
           cp docker-input/plugins/*.zip docker-context/plugins/
 
-          cat > docker-context/Dockerfile <<'EOF'
-          ARG OSD_VERSION=3.5.0
-          FROM opensearchproject/opensearch-dashboards:${OSD_VERSION}
+          cp deploy/Dockerfile docker-context/Dockerfile
 
-          COPY plugins/*.zip /tmp/xdr-plugins/
-          RUN set -eux; \
-              for plugin in /tmp/xdr-plugins/*.zip; do \
-                /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin install --allow-root "file://${plugin}"; \
-              done
-          EOF
+      - name: Build test image
+        run: docker build --build-arg OSD_VERSION=${{ matrix.osd_version }} -t xdr-bundle:test docker-context
+
+      - name: Verify authenticated bundle startup
+        run: |
+          sudo sysctl -w vm.max_map_count=262144
+          bash scripts/smoke_bundle.sh xdr-bundle:test ${{ matrix.osd_version }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -347,6 +328,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -354,33 +336,38 @@ jobs:
           password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Build and push multi-platform bundle image
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: docker-context
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
-            OSD_VERSION=${{ env.OPENSEARCH_DASHBOARDS_VERSION }}
+            OSD_VERSION=${{ matrix.osd_version }}
           tags: |
-            ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:${{ needs.metadata.outputs.tag }}
-            ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:latest
+            ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:${{ needs.metadata.outputs.tag }}-osd-${{ matrix.osd_version }}
+            ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:latest-osd-${{ matrix.osd_version }}
 
   docker-plugin-sidecar:
     name: Build and publish plugin-only sidecar image
-    needs: [metadata, build-plugin, smoke-test]
+    if: github.event_name != 'pull_request'
+    needs: [metadata, build-plugin, smoke-test, docker-image]
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        osd_version: [3.5.0, 3.6.0, 3.7.0, 3.8.0, 3.9.0]
     permissions:
       contents: read
       packages: write
 
     steps:
+      - uses: actions/checkout@v4
       - name: Download all plugin artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: plugin-*
+          pattern: plugin-*-osd-${{ matrix.osd_version }}
           path: sidecar-input
           merge-multiple: true
-        continue-on-error: true
 
       - name: Create plugin sidecar build context
         run: |
@@ -391,9 +378,8 @@ jobs:
           cat > sidecar-context/Dockerfile <<'EOF'
           FROM alpine:latest
 
-          # This image is a plugin source that can be mounted into OpenSearch Dashboards
-          # Mount /plugins to your OSD container's plugin directory
-          # Example: docker run -v xdr-plugins:/plugins opensearch-dashboards
+          # ZIP transport only; install these archives with the Dashboards plugin CLI.
+          # Mounting ZIPs as the Dashboards plugin directory does not install them.
 
           COPY plugins/ /plugins/
           RUN ls -lh /plugins/
@@ -410,6 +396,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -423,17 +410,18 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/xdr-plugins:${{ needs.metadata.outputs.tag }}
-            ghcr.io/${{ github.repository_owner }}/xdr-plugins:latest
+            ghcr.io/${{ github.repository_owner }}/xdr-plugins:${{ needs.metadata.outputs.tag }}-osd-${{ matrix.osd_version }}
+            ghcr.io/${{ github.repository_owner }}/xdr-plugins:latest-osd-${{ matrix.osd_version }}
 
       - name: Verify sidecar tags are published
         run: |
           set -euo pipefail
-          docker buildx imagetools inspect "ghcr.io/${{ github.repository_owner }}/xdr-plugins:${{ needs.metadata.outputs.tag }}" >/dev/null
-          docker buildx imagetools inspect "ghcr.io/${{ github.repository_owner }}/xdr-plugins:latest" >/dev/null
+          docker buildx imagetools inspect "ghcr.io/${{ github.repository_owner }}/xdr-plugins:${{ needs.metadata.outputs.tag }}-osd-${{ matrix.osd_version }}" >/dev/null
+          docker buildx imagetools inspect "ghcr.io/${{ github.repository_owner }}/xdr-plugins:latest-osd-${{ matrix.osd_version }}" >/dev/null
 
   publish-release:
     name: Publish GitHub release
+    if: github.event_name != 'pull_request'
     needs: [metadata, bundle-assets, docker-image, docker-plugin-sidecar]
     runs-on: ubuntu-latest
     permissions:
@@ -447,7 +435,8 @@ jobs:
       - name: Download release assets artifact
         uses: actions/download-artifact@v4
         with:
-          name: bundle-assets
+          pattern: bundle-assets-osd-*
+          merge-multiple: true
           path: release-artifacts
 
       - name: Create and push release tag
@@ -473,7 +462,5 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            release-artifacts/${{ needs.metadata.outputs.bundle }}
-            release-artifacts/${{ needs.metadata.outputs.checksums }}
-            release-artifacts/${{ needs.metadata.outputs.manifest }}
-            release-artifacts/${{ needs.metadata.outputs.compose }}
+            release-artifacts/xdr-plugins_*
+            release-artifacts/docker-compose.xdr-plugins.*.yml

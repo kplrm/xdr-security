@@ -1,0 +1,21 @@
+{
+  "cluster_permissions": [
+    "cluster_monitor",
+    "indices:data/write/bulk*",
+    "indices:data/read/msearch*",
+    "indices:admin/index_template/get",
+    "indices:admin/index_template/put",
+    "cluster:admin/opendistro/ism/*"
+  ],
+  "index_permissions": [
+    {
+      "index_patterns": [
+        ".xdr-agent-telemetry-*",
+        ".xdr-agent-security-*",
+        ".xdr-agent-logs-*"
+      ],
+      "allowed_actions": ["indices_all"]
+    }
+  ],
+  "tenant_permissions": []
+}
