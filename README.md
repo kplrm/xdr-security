@@ -45,20 +45,36 @@ kubectl -n "$NAMESPACE" create secret generic xdr-navigator \
 
 ### 3. Update Dashboards
 
-Your deployment manual uses Helm release `opensearch-dashboards`, chart `3.9.0` and Dashboards `3.9.0`. From this checkout, use `NAMESPACE` from step 2 (`opensearch` in your deployment) and replace `XDR_BUNDLE_TAG` with a published bundle tag. For other installations, adjust the release name/chart version using `helm -n "$NAMESPACE" list`.
+For the [official Helm chart](https://github.com/opensearch-project/helm-charts/blob/opensearch-dashboards-3.9.0/charts/opensearch-dashboards/values.yaml), use `NAMESPACE` from step 2 and export your current values:
 
 ```bash
-IMAGE=ghcr.io/kplrm/opensearch-dashboards-xdr-bundle:XDR_BUNDLE_TAG-osd-3.9.0
 umask 077
-helm -n "$NAMESPACE" get values opensearch-dashboards -o json > /tmp/dashboards-current.json
-python3 scripts/kubernetes_overlay.py /tmp/dashboards-current.json \
-  --image "$IMAGE" > /tmp/dashboards-xdr.json
-helm upgrade opensearch-dashboards opensearch/opensearch-dashboards -n "$NAMESPACE" \
-  --version 3.9.0 -f /tmp/dashboards-current.json \
-  -f /tmp/dashboards-xdr.json --atomic --wait --timeout 10m
+helm -n "$NAMESPACE" get values opensearch-dashboards -o yaml > /tmp/dashboards-values.yaml
 ```
 
-The helper preserves existing configuration. If the encryption key already comes from `envFrom` or chart defaults, add `--key-already-configured`. Keep any required registry pull credentials.
+Edit `/tmp/dashboards-values.yaml`: update `image` and `plugins.enabled`, and append the encryption entry to `extraEnvs`. **Keep existing environment entries and all other settings; do not duplicate YAML keys.** Replace `XDR_BUNDLE_TAG` with a published bundle tag:
+
+```yaml
+image:
+  repository: ghcr.io/kplrm/opensearch-dashboards-xdr-bundle
+  tag: "XDR_BUNDLE_TAG-osd-3.9.0"
+extraEnvs:
+  # Keep existing entries here, then add:
+  - name: XDR_NAVIGATOR_ENCRYPTION_KEY
+    valueFrom:
+      secretKeyRef:
+        name: xdr-navigator
+        key: XDR_NAVIGATOR_ENCRYPTION_KEY
+```
+
+If the encryption key is already supplied (including through `envFrom`), retain it instead of adding another entry. Apply the edited values:
+
+```bash
+helm upgrade opensearch-dashboards opensearch/opensearch-dashboards -n "$NAMESPACE" \
+  --version 3.9.0 -f /tmp/dashboards-values.yaml --atomic --wait --timeout 10m
+```
+
+These commands use your manual's release name `opensearch-dashboards` and chart/Dashboards version `3.9.0`. For other installations, find the release and chart version with `helm -n "$NAMESPACE" list`; match the bundle's `osd-…` suffix to your exact Dashboards version. Keep required registry pull credentials.
 
 For other charts/manifests/operators, set the same image and Secret-backed encryption variable. Preserve required custom plugins with a [custom image](deploy/Dockerfile).
 
