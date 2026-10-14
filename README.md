@@ -6,8 +6,36 @@ OpenSearch Dashboards bundle: Security, Coordinator, Defense, Visualizer and Nav
 
 Use an image matching your **exact Dashboards version**, with OpenSearch Security enabled. No new OpenSearch user is needed.
 
-1. In **Security → Roles**, create `xdr_security` using [this definition](deploy/xdr-security-role.json). Select the built-in action groups `cluster_monitor` and `indices_all`; enter the remaining `indices:...` / `cluster:...` strings directly as [custom permissions](https://docs.opensearch.org/latest/security/access-control/permissions/), including their wildcards. **No new action groups are required.** Map the role to existing users/groups and your existing Dashboards service account (`opensearch.username`), retaining their current roles. It grants full suite access; template/ISM permissions are cluster-wide.
-2. Supply a persistent `XDR_NAVIGATOR_ENCRYPTION_KEY` through a Kubernetes Secret or your secret manager. It encrypts saved AI credentials; reuse the same key on every replica and upgrade. For a first installation:
+### 1. Create and assign the role
+
+Replace the three values below: `OS_URL` is your reachable **OpenSearch API** URL and port, `OS_CA` is its trusted CA certificate file, and `OS_ADMIN` is an existing administrator authorized to manage Security roles. Curl prompts for the password. Add `@` to send the file’s contents.
+
+```bash
+OS_URL='https://OPENSEARCH_HOST:PORT'
+OS_CA='/path/to/opensearch-ca.pem'
+OS_ADMIN='EXISTING_SECURITY_ADMIN'
+curl --fail-with-body --cacert "$OS_CA" --user "$OS_ADMIN" \
+  --request PUT "$OS_URL/_plugins/_security/api/roles/xdr_security" \
+  --header 'Content-Type: application/json' \
+  --data-binary @deploy/xdr-security-role.json
+```
+
+This creates or updates `xdr_security` with every permission in the JSON file; no new permission groups or existing XDR indices are needed. If the API certificate is already trusted by your system, omit `--cacert "$OS_CA"`.
+
+Assign the role in **OpenSearch Dashboards**:
+
+1. Sign in as `admin`, then open **Security → Roles → xdr_security**.
+2. Select **Mapped users → Manage mapping**.
+3. Under **Internal users**, add `admin` (your XDR login) and `kibanaserver` (the existing Dashboards backend account). Keep any existing mapped users/groups.
+4. Click **Map** and confirm both users appear under **Mapped users**.
+
+`admin` is the person signing in to Dashboards. `kibanaserver` is the OpenSearch account that the Dashboards server uses for background requests, including XDR event writes and retention setup. Its name is set by `opensearch.username` in **`opensearch_dashboards.yml`**. If your deployment uses different account names, map those existing accounts instead.
+
+XDR agents use **Coordinator enrollment tokens**, not OpenSearch user accounts; do not create a user for each agent. Retain the mapped accounts' other roles. `xdr_security` grants full suite access, including Navigator administration; template/ISM permissions are cluster-wide.
+
+### 2. Supply the encryption key
+
+Navigator uses `XDR_NAVIGATOR_ENCRYPTION_KEY` to encrypt saved model API keys and MCP access tokens before storing them in OpenSearch, rather than saving them as plaintext. Keep it in a Secret and reuse it on every replica and upgrade.
 
 ```bash
 NAMESPACE=YOUR_NAMESPACE
@@ -15,26 +43,26 @@ kubectl -n "$NAMESPACE" create secret generic xdr-navigator \
   --from-literal=XDR_NAVIGATOR_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 ```
 
-3. For the **official Dashboards Helm chart**, run from this checkout. Set the existing release/chart version and a successful release image:
+### 3. Update Dashboards
+
+Your deployment manual uses Helm release `opensearch-dashboards`, chart `3.9.0` and Dashboards `3.9.0`. From this checkout, use `NAMESPACE` from step 2 (`opensearch` in your deployment) and replace `XDR_BUNDLE_TAG` with a published bundle tag. For other installations, adjust the release name/chart version using `helm -n "$NAMESPACE" list`.
 
 ```bash
-RELEASE=YOUR_DASHBOARDS_RELEASE
-CHART_VERSION=3.9.0
-IMAGE=ghcr.io/kplrm/opensearch-dashboards-xdr-bundle:RELEASE_TAG-osd-3.9.0
+IMAGE=ghcr.io/kplrm/opensearch-dashboards-xdr-bundle:XDR_BUNDLE_TAG-osd-3.9.0
 umask 077
-helm -n "$NAMESPACE" get values "$RELEASE" -o json > /tmp/dashboards-current.json
+helm -n "$NAMESPACE" get values opensearch-dashboards -o json > /tmp/dashboards-current.json
 python3 scripts/kubernetes_overlay.py /tmp/dashboards-current.json \
   --image "$IMAGE" > /tmp/dashboards-xdr.json
-helm upgrade "$RELEASE" opensearch/opensearch-dashboards -n "$NAMESPACE" \
-  --version "$CHART_VERSION" -f /tmp/dashboards-current.json \
+helm upgrade opensearch-dashboards opensearch/opensearch-dashboards -n "$NAMESPACE" \
+  --version 3.9.0 -f /tmp/dashboards-current.json \
   -f /tmp/dashboards-xdr.json --atomic --wait --timeout 10m
 ```
 
-The helper retains existing credentials, TLS, ingress and environment settings. If the Navigator key already comes from `envFrom` or chart defaults, add `--key-already-configured`; `--secret NAME` selects another Secret. Private registries require your existing image-pull credentials.
+The helper preserves existing configuration. If the encryption key already comes from `envFrom` or chart defaults, add `--key-already-configured`. Keep any required registry pull credentials.
 
-For **other charts, manifests or operators**, set the same image and inject `XDR_NAVIGATOR_ENCRYPTION_KEY` from your Secret in the existing Dashboards container configuration. Retain its backend connection, authentication and required plugins. Customized images can install the release ZIPs using [deploy/Dockerfile](deploy/Dockerfile) with `OSD_BASE_IMAGE` set to the matching base image.
+For other charts/manifests/operators, set the same image and Secret-backed encryption variable. Preserve required custom plugins with a [custom image](deploy/Dockerfile).
 
-Sign in as an existing user mapped to `xdr_security`; check all four applications and Navigator settings. Users without the role receive `403` on XDR requests. Check Dashboards logs for template/retention errors and enroll a test endpoint. Templates default to one shard, zero replicas and 90-day retention. Take an OpenSearch snapshot before upgrades; Helm rollback restores workload configuration, not data.
+Sign in with `xdr_security` and check the apps and Dashboards logs. XDR defaults to zero index replicas and 90-day retention. Snapshot before upgrades; Helm rollback restores configuration, not OpenSearch data.
 
 ## Release and build
 
