@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run only against disposable containers. Demo TLS is confined to this test.
 set -euo pipefail
+trap 'echo "Smoke test failed at line $LINENO" >&2' ERR
 IMAGE="${1:?bundle image required}"
 OSD_VERSION="${2:?Dashboards version required}"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -76,7 +77,12 @@ code="$(curl -sS -o /dev/null -w '%{http_code}' -u "admin:${OPENSEARCH_INITIAL_A
 # Grant the same role to an existing user; no new OpenSearch user is created.
 os_admin '/_plugins/_security/api/rolesmapping/xdr_security' -X PUT -H 'Content-Type: application/json' \
   -d '{"users":["kibanaserver","admin"],"backend_roles":[],"hosts":[]}' >/dev/null
-osd_admin '/api/xdr-navigator/session' | jq -e '.encryptionReady == true and .user.admin == true and .user.name == "admin"' >/dev/null
+osd_admin '/api/xdr-navigator/session' >"$SMOKE_DIR/session.json"
+if ! jq -e '.encryptionReady == true and .user.admin == true and .user.name == "admin"' "$SMOKE_DIR/session.json" >/dev/null; then
+  echo 'Navigator session check failed: expected encryptionReady=true and admin=true for the xdr_security role. Check the Navigator source commit in the bundle manifest.' >&2
+  jq '{user, encryptionReady}' "$SMOKE_DIR/session.json" >&2
+  exit 1
+fi
 osd_admin '/api/xdr_manager/policies' >/dev/null
 osd_admin '/api/xdr-visualizer/alerts/summary' >/dev/null
 osd_admin '/api/xdr-defense/telemetry/search' -X POST -H 'osd-xsrf: true' -H 'Content-Type: application/json' \

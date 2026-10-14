@@ -19,8 +19,10 @@ concurrency:
 
 env:
   OPENSEARCH_DASHBOARDS_REPOSITORY: opensearch-project/OpenSearch-Dashboards
+  # Define supported targets once; both build matrices use this list.
+  OSD_VERSIONS: '["3.6.0","3.7.0","3.8.0","3.9.0"]'
 
-# Four stages, 12 jobs: metadata + 5 builds + 5 image checks + release.
+# Four stages, 10 jobs: metadata + 4 builds + 4 image checks + release.
 # Each supported Dashboards version needs its own ZIPs and images. PRs test only;
 # pushes to main and manual runs publish after all required checks pass.
 jobs:
@@ -32,6 +34,7 @@ jobs:
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       sources: ${{ steps.meta.outputs.sources }}
+      versions: ${{ steps.meta.outputs.versions }}
     steps:
       - name: Choose bundle tag and pin external component commits
         id: meta
@@ -41,6 +44,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "tag=xdr-plugins-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "versions=${OSD_VERSIONS}" >> "$GITHUB_OUTPUT"
           SOURCES='{}'
           for plugin in xdr-coordinator xdr-defense xdr-visualizer xdr-navigator; do
             REPO="${GITHUB_REPOSITORY_OWNER}/${plugin}"
@@ -51,7 +55,7 @@ jobs:
           echo "sources=${SOURCES}" >> "$GITHUB_OUTPUT"
 
   # 2. Bootstrap Dashboards once per version, then test/build all five plugins.
-  # Previously each plugin repeated the same bootstrap (25 jobs instead of 5).
+  # Sharing this checkout avoids repeating bootstrap for each plugin.
   build-bundle:
     name: Build and verify ZIPs (OSD ${{ matrix.osd_version }})
     needs: metadata
@@ -59,7 +63,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        osd_version: [3.6.0, 3.7.0, 3.8.0, 3.9.0]
+        osd_version: ${{ fromJSON(needs.metadata.outputs.versions) }}
     steps:
       - name: Checkout this workflow's XDR Security commit
         uses: actions/checkout@v7
@@ -197,6 +201,8 @@ jobs:
           name: bundle-assets-osd-${{ matrix.osd_version }}
           path: release-artifacts/
           if-no-files-found: error
+          # ZIPs/tarballs are already compressed; recompressing wastes CPU.
+          compression-level: 0
           retention-days: 2
 
   # 3. Install ZIPs into the real Dashboards image and exercise authenticated APIs.
@@ -209,7 +215,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        osd_version: [3.6.0, 3.7.0, 3.8.0, 3.9.0]
+        osd_version: ${{ fromJSON(needs.metadata.outputs.versions) }}
     permissions:
       contents: read
       packages: write
@@ -228,8 +234,24 @@ jobs:
           mkdir -p docker-context/plugins
           cp bundle-input/plugins/*.zip docker-context/plugins/
           cp deploy/Dockerfile docker-context/Dockerfile
+      - name: Set up QEMU
+        if: github.event_name != 'pull_request'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/arm64
+      # Use one builder for testing and publication so AMD64 layers are reused.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
       - name: Build native AMD64 test image
-        run: docker build --build-arg OSD_VERSION=${{ matrix.osd_version }} -t xdr-bundle:test docker-context
+        uses: docker/build-push-action@v6
+        with:
+          context: docker-context
+          platforms: linux/amd64
+          load: true
+          tags: xdr-bundle:test
+          build-args: |
+            OSD_VERSION=${{ matrix.osd_version }}
+          cache-from: type=gha,scope=xdr-bundle-osd-${{ matrix.osd_version }}
       - name: Test startup, role enforcement, APIs and retention setup
         run: |
           sudo sysctl -w vm.max_map_count=262144
@@ -237,14 +259,6 @@ jobs:
 
       # PRs stop after validation. Releases build AMD64 and ARM64 images below;
       # ARM64 is built with QEMU, while the runtime test above covers native AMD64.
-      - name: Set up QEMU
-        if: github.event_name != 'pull_request'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: linux/amd64,linux/arm64
-      - name: Set up Docker Buildx
-        if: github.event_name != 'pull_request'
-        uses: docker/setup-buildx-action@v3
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -261,6 +275,9 @@ jobs:
           push: true
           build-args: |
             OSD_VERSION=${{ matrix.osd_version }}
+          # Separate scopes prevent one version's cache from overwriting another.
+          cache-from: type=gha,scope=xdr-bundle-osd-${{ matrix.osd_version }}
+          cache-to: type=gha,scope=xdr-bundle-osd-${{ matrix.osd_version }},mode=max,ignore-error=true
           tags: |
             ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:${{ needs.metadata.outputs.tag }}-osd-${{ matrix.osd_version }}
             ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:latest-osd-${{ matrix.osd_version }}
