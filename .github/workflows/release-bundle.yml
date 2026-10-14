@@ -59,7 +59,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        osd_version: [3.5.0, 3.6.0, 3.7.0, 3.8.0, 3.9.0]
+        osd_version: [3.6.0, 3.7.0, 3.8.0, 3.9.0]
     steps:
       - name: Checkout this workflow's XDR Security commit
         uses: actions/checkout@v7
@@ -209,7 +209,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        osd_version: [3.5.0, 3.6.0, 3.7.0, 3.8.0, 3.9.0]
+        osd_version: [3.6.0, 3.7.0, 3.8.0, 3.9.0]
     permissions:
       contents: read
       packages: write
