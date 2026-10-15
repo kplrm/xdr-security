@@ -10,6 +10,12 @@
   "index_permissions": [
     {
       "index_patterns": [
+        "xdr-agent-telemetry",
+        "xdr-agent-security",
+        "xdr-agent-logs",
+        ".ds-xdr-agent-telemetry-*",
+        ".ds-xdr-agent-security-*",
+        ".ds-xdr-agent-logs-*",
         ".xdr-agent-telemetry-*",
         ".xdr-agent-security-*",
         ".xdr-agent-logs-*"

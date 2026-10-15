@@ -38,6 +38,19 @@ for _ in {1..90}; do
   sleep 5
 done
 [[ "$ready" == true ]] || { echo 'OpenSearch did not become ready' >&2; exit 1; }
+# Enable native API keys while preserving the disposable Security configuration.
+# Apply only config, using the demo admin certificate confined to this test.
+os_admin '/_plugins/_security/api/securityconfig' >"$SMOKE_DIR/securityconfig.json"
+jq '{_meta:{type:"config",config_version:2},config:.config} | .config.dynamic.api_tokens.enabled = true' \
+  "$SMOKE_DIR/securityconfig.json" \
+  | docker exec -i "${SMOKE_NAME}-os" bash -c 'cat > /tmp/xdr-securityconfig.json &&
+    plugins/opensearch-security/tools/securityadmin.sh -f /tmp/xdr-securityconfig.json -t config -icl -nhnv \
+      -cacert config/root-ca.pem -cert config/kirk.pem -key config/kirk-key.pem' >"$SMOKE_DIR/securityadmin.log" 2>&1
+os_admin '/_plugins/_security/api/apitokens' -X POST -H 'Content-Type: application/json' \
+  --data-binary "@${ROOT_DIR}/deploy/xdr-agent-api-key.json" >"$SMOKE_DIR/api-key.json"
+API_KEY="$(jq -er '.token' "$SMOKE_DIR/api-key.json")"
+API_KEY_ID="$(jq -er '.id' "$SMOKE_DIR/api-key.json")"
+if [[ "${GITHUB_ACTIONS:-}" == true ]]; then echo "::add-mask::${API_KEY}"; fi
 os_admin '/_plugins/_security/api/roles/xdr_security' -X PUT -H 'Content-Type: application/json' \
   --data-binary "@${ROOT_DIR}/deploy/xdr-security-role.json" >/dev/null
 # Start with the existing service account mapped; the existing admin is not mapped yet.
@@ -108,15 +121,44 @@ wait_json() {
   return 1
 }
 for template in xdr-telemetry-template xdr-security-template xdr-agent-logs-template; do
-  wait_json "/_index_template/$template" '.index_templates | length == 1'
+  wait_json "/_index_template/$template" '.index_templates | length == 1 and .[0].index_template.data_stream.timestamp_field.name == "@timestamp"'
 done
 for policy in xdr-telemetry-retention xdr-security-retention xdr-agent-logs-retention; do
-  wait_json "/_plugins/_ism/policies/$policy" '.policy'
+  wait_json "/_plugins/_ism/policies/$policy" '.policy.default_state == "rollover"'
 done
-# Exercise the same service-account bulk permission used by agent intake.
-printf '{"index":{"_index":".xdr-agent-telemetry-smoke"}}\n{"@timestamp":"2026-01-01T00:00:00Z","event.module":"process"}\n' \
-  | curl -fkSs -u kibanaserver:kibanaserver "$OS_URL/_bulk" -H 'Content-Type: application/x-ndjson' --data-binary @- \
-  | jq -e '.errors == false' >/dev/null
+for topic in telemetry security logs; do
+  stream="xdr-agent-${topic}"
+  wait_json "/_data_stream/$stream" '.data_streams | length == 1'
+  # Test both Coordinator's backend writer and a direct Agent writer; include a
+  # new payload field to exercise dynamic mappings under the restricted API key.
+  for actor in coordinator agent; do
+    auth=(-u kibanaserver:kibanaserver)
+    [[ "$actor" != agent ]] || auth=(-H "Authorization: ApiKey $API_KEY")
+    printf '{"create":{"_index":"%s","_id":"%s"}}\n{"@timestamp":"2026-01-01T00:00:00Z","event.module":"process","agent.id":"smoke","payload":{"%s":true}}\n' "$stream" "$actor" "$actor" \
+      | curl -fkSs "${auth[@]}" "$OS_URL/_bulk?refresh=true" -H 'Content-Type: application/x-ndjson' --data-binary @- \
+      | jq -e '.errors == false' >/dev/null
+  done
+  wait_json "/_plugins/_ism/explain/$stream" '.total_managed_indices == 1'
+done
+# New writes follow rollover; searches include new streams and legacy history.
+os_admin '/xdr-agent-telemetry/_rollover' -X POST -H 'Content-Type: application/json' -d '{}' >/dev/null
+printf '{"create":{"_index":"xdr-agent-telemetry","_id":"after-rollover"}}\n{"@timestamp":"2026-01-01T00:00:00Z","agent.id":"smoke"}\n' \
+  | curl -fkSs -H "Authorization: ApiKey $API_KEY" "$OS_URL/_bulk?refresh=true" \
+    -H 'Content-Type: application/x-ndjson' --data-binary @- | jq -e '.errors == false' >/dev/null
+os_admin '/.xdr-agent-telemetry-smoke/_doc/legacy?refresh=true' -X PUT -H 'Content-Type: application/json' \
+  -d '{"@timestamp":"2026-01-01T00:00:00Z","agent.id":"smoke"}' >/dev/null
+curl -fkSs -u kibanaserver:kibanaserver "$OS_URL/xdr-agent-telemetry,.xdr-agent-telemetry-*/_search" \
+  | jq -e '.hits.total.value == 4' >/dev/null
+for path in '/xdr-agent-telemetry/_search' '/unrelated-index/_doc/event'; do
+  method=GET
+  [[ "$path" != '/unrelated-index/_doc/event' ]] || method=PUT
+  code="$(curl -kSs -o /dev/null -w '%{http_code}' -H "Authorization: ApiKey $API_KEY" \
+    -X "$method" "$OS_URL$path" -H 'Content-Type: application/json' -d '{}')"
+  [[ "$code" == 403 ]] || { echo "API key unexpectedly allowed $path: $code" >&2; exit 1; }
+done
+os_admin "/_plugins/_security/api/apitokens/$API_KEY_ID" -X DELETE >/dev/null
+code="$(curl -kSs -o /dev/null -w '%{http_code}' -H "Authorization: ApiKey $API_KEY" "$OS_URL/xdr-agent-telemetry/_search")"
+[[ "$code" == 401 ]] || { echo "Revoked API key was not rejected: $code" >&2; exit 1; }
 code="$(curl -sS -o /dev/null -w '%{http_code}' "$OSD_URL/api/xdr-navigator/session")"
 [[ "$code" == 401 || "$code" == 302 ]] || { echo "Unexpected anonymous session response: $code" >&2; exit 1; }
-echo "Authenticated bundle startup, templates, retention, service writes and single-role authorization passed for ${OSD_VERSION}"
+echo "Authenticated startup, streams, rollover, legacy reads, API-key scoping/revocation and suite authorization passed for ${OSD_VERSION}"

@@ -1,0 +1,11 @@
+{
+  "name": "xdr-agent",
+  "duration_seconds": 7776000,
+  "cluster_permissions": ["indices:data/write/bulk*"],
+  "index_permissions": [
+    {
+      "index_pattern": ["xdr-agent-telemetry", "xdr-agent-security", "xdr-agent-logs"],
+      "allowed_actions": ["indices:data/write/bulk*", "indices:data/write/index", "indices:admin/mapping/put"]
+    }
+  ]
+}

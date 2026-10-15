@@ -20,9 +20,9 @@ concurrency:
 env:
   OPENSEARCH_DASHBOARDS_REPOSITORY: opensearch-project/OpenSearch-Dashboards
   # Define supported targets once; both build matrices use this list.
-  OSD_VERSIONS: '["3.6.0","3.7.0","3.8.0","3.9.0"]'
+  OSD_VERSIONS: '["3.7.0","3.8.0","3.9.0"]'
 
-# Four stages, 10 jobs: metadata + 4 builds + 4 image checks + release.
+# Four stages, 8 jobs: metadata + 3 builds + 3 image checks + release.
 # Each supported Dashboards version needs its own ZIPs and images. PRs test only;
 # pushes to main and manual runs publish after all required checks pass.
 jobs:
@@ -43,7 +43,8 @@ jobs:
           GH_TOKEN: ${{ secrets.XDR_SOURCE_TOKEN || github.token }}
         run: |
           set -euo pipefail
-          echo "tag=xdr-plugins-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          # Keep release history unique; published image tags use only the OSD version.
+          echo "tag=xdr-security-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           echo "versions=${OSD_VERSIONS}" >> "$GITHUB_OUTPUT"
           SOURCES='{}'
           for plugin in xdr-coordinator xdr-defense xdr-visualizer xdr-navigator; do
@@ -189,7 +190,7 @@ jobs:
           cat > "release-artifacts/docker-compose.xdr-plugins.${BUNDLE_TAG}.osd-${OSD_VERSION}.yml" <<EOF
           services:
             opensearch-dashboards:
-              image: ghcr.io/${GITHUB_REPOSITORY_OWNER}/opensearch-dashboards-xdr-bundle:${BUNDLE_TAG}-osd-${OSD_VERSION}
+              image: ghcr.io/${GITHUB_REPOSITORY_OWNER}/opensearch-dashboards-xdr-bundle:xdr-security-osd-${OSD_VERSION}
               ports:
                 - "5601:5601"
               environment:
@@ -279,7 +280,7 @@ jobs:
           cache-from: type=gha,scope=xdr-bundle-osd-${{ matrix.osd_version }}
           cache-to: type=gha,scope=xdr-bundle-osd-${{ matrix.osd_version }},mode=max,ignore-error=true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:${{ needs.metadata.outputs.tag }}-osd-${{ matrix.osd_version }}
+            ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:xdr-security-osd-${{ matrix.osd_version }}
             ghcr.io/${{ github.repository_owner }}/opensearch-dashboards-xdr-bundle:latest-osd-${{ matrix.osd_version }}
 
       # Keep ZIP transport for the existing Compose installer; it is not a
@@ -302,17 +303,16 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/xdr-plugins:${{ needs.metadata.outputs.tag }}-osd-${{ matrix.osd_version }}
+            ghcr.io/${{ github.repository_owner }}/xdr-plugins:xdr-security-osd-${{ matrix.osd_version }}
             ghcr.io/${{ github.repository_owner }}/xdr-plugins:latest-osd-${{ matrix.osd_version }}
       - name: Verify both published image manifests
         if: github.event_name != 'pull_request'
         env:
-          BUNDLE_TAG: ${{ needs.metadata.outputs.tag }}
           OSD_VERSION: ${{ matrix.osd_version }}
         run: |
           set -euo pipefail
           for image in opensearch-dashboards-xdr-bundle xdr-plugins; do
-            docker buildx imagetools inspect "ghcr.io/${GITHUB_REPOSITORY_OWNER}/${image}:${BUNDLE_TAG}-osd-${OSD_VERSION}" >/dev/null
+            docker buildx imagetools inspect "ghcr.io/${GITHUB_REPOSITORY_OWNER}/${image}:xdr-security-osd-${OSD_VERSION}" >/dev/null
             docker buildx imagetools inspect "ghcr.io/${GITHUB_REPOSITORY_OWNER}/${image}:latest-osd-${OSD_VERSION}" >/dev/null
           done
 
