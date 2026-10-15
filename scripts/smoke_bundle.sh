@@ -20,15 +20,18 @@ cleanup() {
 }
 trap cleanup EXIT
 export OPENSEARCH_INITIAL_ADMIN_PASSWORD="$(openssl rand -hex 24)Aa1!"
+export XDR_AGENT_PASSWORD="$(openssl rand -hex 24)Aa1!"
 export XDR_NAVIGATOR_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
   echo "::add-mask::${OPENSEARCH_INITIAL_ADMIN_PASSWORD}"
+  echo "::add-mask::${XDR_AGENT_PASSWORD}"
   echo "::add-mask::${XDR_NAVIGATOR_ENCRYPTION_KEY}"
 fi
 docker network create "$SMOKE_NAME" >/dev/null
 docker run -d --name "${SMOKE_NAME}-os" --network "$SMOKE_NAME" --network-alias opensearch \
   -p 127.0.0.1::9200 -e discovery.type=single-node -e OPENSEARCH_JAVA_OPTS='-Xms512m -Xmx512m' \
-  -e OPENSEARCH_INITIAL_ADMIN_PASSWORD "opensearchproject/opensearch:${OSD_VERSION}" >/dev/null
+  -e OPENSEARCH_INITIAL_ADMIN_PASSWORD \
+  "opensearchproject/opensearch:${OSD_VERSION}" >/dev/null
 OS_URL="https://$(docker port "${SMOKE_NAME}-os" 9200/tcp)"
 os_admin() { curl -fkSs --connect-timeout 3 --max-time 20 -u "admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD}" "$OS_URL$1" "${@:2}"; }
 ready=false
@@ -38,19 +41,12 @@ for _ in {1..90}; do
   sleep 5
 done
 [[ "$ready" == true ]] || { echo 'OpenSearch did not become ready' >&2; exit 1; }
-# Enable native API keys while preserving the disposable Security configuration.
-# Apply only config, using the demo admin certificate confined to this test.
-os_admin '/_plugins/_security/api/securityconfig' >"$SMOKE_DIR/securityconfig.json"
-jq '{_meta:{type:"config",config_version:2},config:.config} | .config.dynamic.api_tokens.enabled = true' \
-  "$SMOKE_DIR/securityconfig.json" \
-  | docker exec -i "${SMOKE_NAME}-os" bash -c 'cat > /tmp/xdr-securityconfig.json &&
-    plugins/opensearch-security/tools/securityadmin.sh -f /tmp/xdr-securityconfig.json -t config -icl -nhnv \
-      -cacert config/root-ca.pem -cert config/kirk.pem -key config/kirk-key.pem' >"$SMOKE_DIR/securityadmin.log" 2>&1
-os_admin '/_plugins/_security/api/apitokens' -X POST -H 'Content-Type: application/json' \
-  --data-binary "@${ROOT_DIR}/deploy/xdr-agent-api-key.json" >"$SMOKE_DIR/api-key.json"
-API_KEY="$(jq -er '.token' "$SMOKE_DIR/api-key.json")"
-API_KEY_ID="$(jq -er '.id' "$SMOKE_DIR/api-key.json")"
-if [[ "${GITHUB_ACTIONS:-}" == true ]]; then echo "::add-mask::${API_KEY}"; fi
+# Exercise the same restricted Basic-auth account setup documented in the README.
+os_admin '/_plugins/_security/api/roles/xdr_agent_ingest' -X PUT -H 'Content-Type: application/json' \
+  --data-binary "@${ROOT_DIR}/deploy/xdr-agent-ingest-role.json" >/dev/null
+jq -n '{password: env.XDR_AGENT_PASSWORD, opendistro_security_roles: ["xdr_agent_ingest"]}' \
+  | os_admin '/_plugins/_security/api/internalusers/xdr-agent' -X PUT -H 'Content-Type: application/json' \
+    --data-binary @- >/dev/null
 os_admin '/_plugins/_security/api/roles/xdr_security' -X PUT -H 'Content-Type: application/json' \
   --data-binary "@${ROOT_DIR}/deploy/xdr-security-role.json" >/dev/null
 # Start with the existing service account mapped; the existing admin is not mapped yet.
@@ -87,7 +83,7 @@ done
 code="$(curl -sS -o /dev/null -w '%{http_code}' -u "admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD}" \
   -X POST "$OSD_URL/api/xdr-defense/telemetry/search" -H 'osd-xsrf: true' -H 'Content-Type: application/json' -d '{}')"
 [[ "$code" == 403 ]] || { echo "Defense role not enforced: $code" >&2; exit 1; }
-# Grant the same role to an existing user; no new OpenSearch user is created.
+# Grant the suite role to the existing admin login.
 os_admin '/_plugins/_security/api/rolesmapping/xdr_security' -X PUT -H 'Content-Type: application/json' \
   -d '{"users":["kibanaserver","admin"],"backend_roles":[],"hosts":[]}' >/dev/null
 osd_admin '/api/xdr-navigator/session' >"$SMOKE_DIR/session.json"
@@ -130,35 +126,40 @@ for topic in telemetry security logs; do
   stream="xdr-agent-${topic}"
   wait_json "/_data_stream/$stream" '.data_streams | length == 1'
   # Test both Coordinator's backend writer and a direct Agent writer; include a
-  # new payload field to exercise dynamic mappings under the restricted API key.
-  for actor in coordinator agent; do
+  # new payload field to exercise dynamic mappings under the restricted role.
+  # Two agent identities use the same account as a shared fleet credential.
+  for actor in coordinator agent-1 agent-2; do
     auth=(-u kibanaserver:kibanaserver)
-    [[ "$actor" != agent ]] || auth=(-H "Authorization: ApiKey $API_KEY")
-    printf '{"create":{"_index":"%s","_id":"%s"}}\n{"@timestamp":"2026-01-01T00:00:00Z","event.module":"process","agent.id":"smoke","payload":{"%s":true}}\n' "$stream" "$actor" "$actor" \
+    [[ "$actor" == coordinator ]] || auth=(-u "xdr-agent:$XDR_AGENT_PASSWORD")
+    printf '{"create":{"_index":"%s","_id":"%s"}}\n{"@timestamp":"2026-01-01T00:00:00Z","event.module":"process","agent.id":"%s","payload":{"%s":true}}\n' "$stream" "$actor" "$actor" "$actor" \
       | curl -fkSs "${auth[@]}" "$OS_URL/_bulk?refresh=true" -H 'Content-Type: application/x-ndjson' --data-binary @- \
       | jq -e '.errors == false' >/dev/null
   done
   wait_json "/_plugins/_ism/explain/$stream" '.total_managed_indices == 1'
 done
-# New writes follow rollover; searches include new streams and legacy history.
-os_admin '/xdr-agent-telemetry/_rollover' -X POST -H 'Content-Type: application/json' -d '{}' >/dev/null
+# New writes and ISM policy attachment follow the stream through rollover.
+curl -fkSs -u kibanaserver:kibanaserver "$OS_URL/xdr-agent-telemetry/_rollover" \
+  -X POST -H 'Content-Type: application/json' -d '{}' >/dev/null
 printf '{"create":{"_index":"xdr-agent-telemetry","_id":"after-rollover"}}\n{"@timestamp":"2026-01-01T00:00:00Z","agent.id":"smoke"}\n' \
-  | curl -fkSs -H "Authorization: ApiKey $API_KEY" "$OS_URL/_bulk?refresh=true" \
+  | curl -fkSs -u "xdr-agent:$XDR_AGENT_PASSWORD" "$OS_URL/_bulk?refresh=true" \
     -H 'Content-Type: application/x-ndjson' --data-binary @- | jq -e '.errors == false' >/dev/null
-os_admin '/.xdr-agent-telemetry-smoke/_doc/legacy?refresh=true' -X PUT -H 'Content-Type: application/json' \
-  -d '{"@timestamp":"2026-01-01T00:00:00Z","agent.id":"smoke"}' >/dev/null
-curl -fkSs -u kibanaserver:kibanaserver "$OS_URL/xdr-agent-telemetry,.xdr-agent-telemetry-*/_search" \
+wait_json '/_plugins/_ism/explain/xdr-agent-telemetry' '.total_managed_indices == 2'
+curl -fkSs -u kibanaserver:kibanaserver "$OS_URL/xdr-agent-telemetry/_search" \
   | jq -e '.hits.total.value == 4' >/dev/null
+for topic in logs security; do
+  osd_admin "/api/saved_objects/index-pattern/xdr-agent-${topic}-hidden" \
+    | jq -e --arg stream "xdr-agent-${topic}" '.attributes.title == $stream' >/dev/null
+done
 for path in '/xdr-agent-telemetry/_search' '/unrelated-index/_doc/event'; do
   method=GET
   [[ "$path" != '/unrelated-index/_doc/event' ]] || method=PUT
-  code="$(curl -kSs -o /dev/null -w '%{http_code}' -H "Authorization: ApiKey $API_KEY" \
+  code="$(curl -kSs -o /dev/null -w '%{http_code}' -u "xdr-agent:$XDR_AGENT_PASSWORD" \
     -X "$method" "$OS_URL$path" -H 'Content-Type: application/json' -d '{}')"
-  [[ "$code" == 403 ]] || { echo "API key unexpectedly allowed $path: $code" >&2; exit 1; }
+  [[ "$code" == 403 ]] || { echo "Ingest account unexpectedly allowed $path: $code" >&2; exit 1; }
 done
-os_admin "/_plugins/_security/api/apitokens/$API_KEY_ID" -X DELETE >/dev/null
-code="$(curl -kSs -o /dev/null -w '%{http_code}' -H "Authorization: ApiKey $API_KEY" "$OS_URL/xdr-agent-telemetry/_search")"
-[[ "$code" == 401 ]] || { echo "Revoked API key was not rejected: $code" >&2; exit 1; }
+os_admin '/_plugins/_security/api/internalusers/xdr-agent' -X DELETE >/dev/null
+code="$(curl -kSs -o /dev/null -w '%{http_code}' -u "xdr-agent:$XDR_AGENT_PASSWORD" "$OS_URL/xdr-agent-telemetry/_search")"
+[[ "$code" == 401 ]] || { echo "Deleted ingest account was not rejected: $code" >&2; exit 1; }
 code="$(curl -sS -o /dev/null -w '%{http_code}' "$OSD_URL/api/xdr-navigator/session")"
 [[ "$code" == 401 || "$code" == 302 ]] || { echo "Unexpected anonymous session response: $code" >&2; exit 1; }
-echo "Authenticated startup, streams, rollover, legacy reads, API-key scoping/revocation and suite authorization passed for ${OSD_VERSION}"
+echo "Authenticated startup, stream views/permissions, rollover, shared Basic-auth account scoping/revocation and suite authorization passed for ${OSD_VERSION}"

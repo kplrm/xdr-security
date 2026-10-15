@@ -4,7 +4,7 @@ OpenSearch Dashboards bundle: Security, Coordinator, Defense, Visualizer and Nav
 
 ## Install on Kubernetes
 
-Requires OpenSearch/Dashboards **3.7+**, with OpenSearch Security enabled. No new OpenSearch user is needed.
+Requires OpenSearch/Dashboards **3.7+**, with OpenSearch Security enabled.
 
 ### 1. Create and assign the role
 
@@ -31,7 +31,7 @@ Assign the role in **OpenSearch Dashboards**:
 
 `admin` is the person signing in to Dashboards. `kibanaserver` is the OpenSearch account that the Dashboards server uses for background requests, including XDR event writes and retention setup. Its name is set by `opensearch.username` in **`opensearch_dashboards.yml`**. If your deployment uses different account names, map those existing accounts instead.
 
-XDR agents enroll using **Coordinator tokens**; direct event ingestion uses a restricted API key below. Retain the mapped accounts' other roles. `xdr_security` grants full suite access, including Navigator administration; template/ISM permissions are cluster-wide.
+XDR agents enroll using **Coordinator tokens**; direct event ingestion uses the restricted account below. Retain the mapped accounts' other roles. `xdr_security` grants full suite access, including Navigator administration; template/ISM permissions are cluster-wide.
 
 ### 2. Supply the encryption key
 
@@ -88,29 +88,31 @@ In a new terminal, inspect the logs:
 kubectl -n "$NAMESPACE" logs deploy/opensearch-dashboards -f
 ```
 
-Sign in with `xdr_security` and check the apps and Dashboards logs. Coordinator creates three data streams with rollover and 90-day retention by default; existing daily indices remain searchable. Snapshot before upgrades; Helm rollback restores configuration, not OpenSearch data.
+Sign in with `xdr_security` and check the apps and Dashboards logs. Coordinator creates three data streams with rollover and 90-day retention by default. Dashboards calls its views **index patterns**, including views of streams; XDR views and permissions target only the three stream names. Snapshot before upgrades; Helm rollback restores configuration, not OpenSearch data.
 
 ### 4. Send Agent events directly to OpenSearch
 
-In Dashboards, enable [API keys](https://docs.opensearch.org/latest/security/access-control/api-keys/) in your existing **OpenSearch Security `config.yml`**. Merge this setting, then apply that file through your existing `securityadmin.sh -f /path/to/config.yml -t config ...` procedure, retaining the other settings and existing users/roles:
-
-```yaml
-config:
-  dynamic:
-    api_tokens:
-      enabled: true
-```
-
-In [the key definition](deploy/xdr-agent-api-key.json), change `name` to a unique name for this agent. Create its write-only key using the same connection values as step 1:
+Create the restricted write role, then create the `xdr-agent` user and assign that role. Requires `jq`; the second command prompts for the new Agent password and your administrator password:
 
 ```bash
 curl --fail-with-body --cacert "$OS_CA" --user "$OS_ADMIN" \
-  --request POST "$OS_URL/_plugins/_security/api/apitokens" \
+  --request PUT "$OS_URL/_plugins/_security/api/roles/xdr_agent_ingest" \
   --header 'Content-Type: application/json' \
-  --data-binary @deploy/xdr-agent-api-key.json
+  --data-binary @deploy/xdr-agent-ingest-role.json
+
+read -rsp 'New xdr-agent password: ' XDR_AGENT_PASSWORD
+printf '\n'
+jq -n --arg password "$XDR_AGENT_PASSWORD" \
+  '{password: $password, opendistro_security_roles: ["xdr_agent_ingest"]}' |
+curl --fail-with-body --cacert "$OS_CA" --user "$OS_ADMIN" \
+  --request PUT "$OS_URL/_plugins/_security/api/internalusers/xdr-agent" \
+  --header 'Content-Type: application/json' --data-binary @-
+unset XDR_AGENT_PASSWORD
 ```
 
-Save the returned `token` securely; it is shown only once. The key permits writes and dynamic mapping updates only on the three XDR streams, independently of user roles. Configure the updated Agent's API URL, token environment file and CA using the [direct-ingestion steps](https://github.com/kplrm/xdr-agent/blob/main/docs/api-endpoints.md#direct-opensearch-ingestion). Events bypass Dashboards; enrollment and health still use Coordinator. Rotate the key before its 90-day expiry; revoking enrollment does not revoke it. To revoke it, use the returned `id` with `DELETE /_plugins/_security/api/apitokens/<id>`.
+This creates/replaces the dedicated account. Its role permits writes and dynamic mapping updates only on the three XDR streams; Agents do not need the full `xdr_security` role.
+
+On each Agent, set `opensearch.username` to `xdr-agent` in `/etc/xdr-agent/config.json` and store `XDR_OPENSEARCH_PASSWORD='YOUR_USER_PASSWORD'` in `/etc/xdr-agent/opensearch.env` (mode `600`). Configure the API URL and trusted CA, then restart the updated Agent using the [direct-ingestion steps](https://github.com/kplrm/xdr-agent/blob/main/docs/api-endpoints.md#direct-opensearch-ingestion). Events use **Basic authentication over HTTPS**; enrollment tokens remain separate. The same account can serve multiple Agents without changing their Agent IDs.
 
 ## Release and build
 
