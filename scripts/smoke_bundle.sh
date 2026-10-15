@@ -131,7 +131,7 @@ for topic in telemetry security logs; do
   for actor in coordinator agent-1 agent-2; do
     auth=(-u kibanaserver:kibanaserver)
     [[ "$actor" == coordinator ]] || auth=(-u "xdr-agent:$XDR_AGENT_PASSWORD")
-    printf '{"create":{"_index":"%s","_id":"%s"}}\n{"@timestamp":"2026-01-01T00:00:00Z","event.module":"process","agent.id":"%s","payload":{"%s":true}}\n' "$stream" "$actor" "$actor" "$actor" \
+    printf '{"create":{"_index":"%s","_id":"%s"}}\n{"@timestamp":"2026-01-01T00:00:00Z","event.module":"telemetry.process","agent.id":"%s","payload":{"%s":true}}\n' "$stream" "$actor" "$actor" "$actor" \
       | curl -fkSs "${auth[@]}" "$OS_URL/_bulk?refresh=true" -H 'Content-Type: application/x-ndjson' --data-binary @- \
       | jq -e '.errors == false' >/dev/null
   done
@@ -140,16 +140,30 @@ done
 # New writes and ISM policy attachment follow the stream through rollover.
 curl -fkSs -u kibanaserver:kibanaserver "$OS_URL/xdr-agent-telemetry/_rollover" \
   -X POST -H 'Content-Type: application/json' -d '{}' >/dev/null
-printf '{"create":{"_index":"xdr-agent-telemetry","_id":"after-rollover"}}\n{"@timestamp":"2026-01-01T00:00:00Z","agent.id":"smoke"}\n' \
+printf '{"create":{"_index":"xdr-agent-telemetry","_id":"after-rollover"}}\n{"@timestamp":"2026-01-01T00:00:00Z","event.module":"telemetry.process","agent.id":"smoke"}\n' \
   | curl -fkSs -u "xdr-agent:$XDR_AGENT_PASSWORD" "$OS_URL/_bulk?refresh=true" \
     -H 'Content-Type: application/x-ndjson' --data-binary @- | jq -e '.errors == false' >/dev/null
 wait_json '/_plugins/_ism/explain/xdr-agent-telemetry' '.total_managed_indices == 2'
 curl -fkSs -u kibanaserver:kibanaserver "$OS_URL/xdr-agent-telemetry/_search" \
   | jq -e '.hits.total.value == 4' >/dev/null
-for topic in logs security; do
-  osd_admin "/api/saved_objects/index-pattern/xdr-agent-${topic}-hidden" \
-    | jq -e --arg stream "xdr-agent-${topic}" '.attributes.title == $stream' >/dev/null
+# Defense must return events from both backing indices through the stream name.
+osd_admin '/api/xdr-defense/telemetry/search' -X POST -H 'osd-xsrf: true' -H 'Content-Type: application/json' \
+  -d '{"module":"process","from":"2026-01-01T00:00:00Z","to":"2026-01-02T00:00:00Z","page":1,"query":{"match_all":{}}}' \
+  | jq -e '.total == 4 and (.events | map(.index) | unique | length) == 2' >/dev/null
+for topic in logs security telemetry events; do
+  id="xdr-agent-${topic}-hidden"
+  title="xdr-agent-${topic}"
+  [[ "$topic" != telemetry ]] || id=xdr-agent-telemetry
+  if [[ "$topic" == events ]]; then id=xdr-agent-events; title='xdr-agent-*'; fi
+  # An empty tenant is Global. Curl's semicolon syntax sends an empty header;
+  # the literal name "global" can reach OpenSearch as an unknown custom tenant.
+  osd_admin "/api/saved_objects/index-pattern/$id" -H 'securitytenant;' \
+    | jq -e --arg title "$title" '.attributes.title == $title and .attributes.timeFieldName == "@timestamp"
+        and (.attributes.fields | fromjson | any(.name == "@timestamp" and .type == "date"))' >/dev/null
 done
+# The Discover field API must resolve the combined pattern to stream fields.
+osd_admin '/api/index_patterns/_fields_for_wildcard?pattern=xdr-agent-*' -H 'securitytenant;' \
+  | jq -e '.fields | any(.name == "@timestamp" and .type == "date")' >/dev/null
 for path in '/xdr-agent-telemetry/_search' '/unrelated-index/_doc/event'; do
   method=GET
   [[ "$path" != '/unrelated-index/_doc/event' ]] || method=PUT

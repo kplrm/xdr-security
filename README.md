@@ -88,7 +88,7 @@ In a new terminal, inspect the logs:
 kubectl -n "$NAMESPACE" logs deploy/opensearch-dashboards -f
 ```
 
-Sign in with `xdr_security` and check the apps and Dashboards logs. Coordinator creates three data streams with rollover and 90-day retention by default. Dashboards calls its views **index patterns**, including views of streams; XDR views and permissions target only the three stream names. Snapshot before upgrades; Helm rollback restores configuration, not OpenSearch data.
+Sign in with `xdr_security` and check the apps and Dashboards logs. Coordinator creates three data streams with rollover and 90-day retention by default, plus Discover index patterns in the **Global tenant**: select `xdr-agent-*` for all Agent events or an individual stream. Snapshot before upgrades; Helm rollback restores configuration, not OpenSearch data.
 
 ### 4. Send Agent events directly to OpenSearch
 
