@@ -142,17 +142,20 @@ jobs:
               NODE_PATH="${OSD_ROOT}/node_modules" node --test "${TESTS[@]}"
             fi
             PACKAGE_VERSION=$(node -p 'require(process.argv[1]).version' "${SOURCE}/package.json")
-            MANIFEST_VERSION=$(node -p 'require(process.argv[1]).version' "${SOURCE}/opensearch_dashboards.json")
-            if [[ "$PACKAGE_VERSION" != "$MANIFEST_VERSION" ]]; then
-              echo "Version mismatch in ${plugin}: package=${PACKAGE_VERSION}, manifest=${MANIFEST_VERSION}" >&2
-              exit 1
-            fi
             # Stage only into this disposable CI checkout, never the component repos.
             PLUGIN_DIR="${OSD_ROOT}/plugins/${plugin}"
             mkdir -p "$PLUGIN_DIR"
             rsync -a --delete --exclude='.git' --exclude='build' --exclude='target' \
               --exclude='node_modules' --exclude='.yarn' --exclude='.pnp.*' \
               "${SOURCE}/" "${PLUGIN_DIR}/"
+            # package.json is authoritative; manifests are generated build metadata.
+            node -e '
+              const fs = require("fs");
+              const file = process.argv[1];
+              const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+              manifest.version = process.argv[2];
+              fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + "\n");
+            ' "${PLUGIN_DIR}/opensearch_dashboards.json" "$PACKAGE_VERSION"
             (cd "$PLUGIN_DIR" && node ../../scripts/plugin_helpers build --opensearch-dashboards-version="$OSD_VERSION")
             ZIPS=("${PLUGIN_DIR}"/build/*.zip)
             if (( ${#ZIPS[@]} != 1 )); then

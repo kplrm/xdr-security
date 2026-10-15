@@ -88,7 +88,7 @@ In a new terminal, inspect the logs:
 kubectl -n "$NAMESPACE" logs deploy/opensearch-dashboards -f
 ```
 
-Sign in with `xdr_security` and check the apps and Dashboards logs. Coordinator creates three data streams with rollover and 90-day retention by default, plus Discover index patterns in the **Global tenant**: select `xdr-agent-*` for all Agent events or an individual stream. Snapshot before upgrades; Helm rollback restores configuration, not OpenSearch data.
+Sign in with `xdr_security` and check the apps and Dashboards logs. Coordinator creates the streams, rollover/90-day retention and three Discover patterns in **Global** and each **Private** tenant on first use: `xdr-agent-logs`, `xdr-agent-security` and `xdr-agent-telemetry` (initial default). Manual patterns and user-selected defaults are preserved. Snapshot before upgrades; Helm rollback restores configuration, not OpenSearch data.
 
 ### 4. Send Agent events directly to OpenSearch
 
@@ -124,3 +124,5 @@ OSD_ROOT=/path/to/bootstrapped/OpenSearch-Dashboards-3.9.0 \
 ```
 
 Builds use isolated staging and leave the upstream checkout untouched. Sentry is excluded.
+
+Each plugin's `package.json` owns its version; builds copy it into the staged manifest. Only XDR Agent keeps a `VERSION` file and releases independently. Coordinator discovers Agent upgrades from its GitHub releases; Agent and plugin versions need not match.

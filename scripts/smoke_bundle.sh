@@ -59,6 +59,7 @@ opensearch.username: kibanaserver
 opensearch.password: kibanaserver
 opensearch.ssl.verificationMode: none
 opensearch.requestHeadersAllowlist: [authorization, securitytenant]
+opensearch_security.multitenancy.enabled: true
 opensearch_security.cookie.secure: false
 EOF
 chmod 755 "$SMOKE_DIR"
@@ -150,19 +151,45 @@ curl -fkSs -u kibanaserver:kibanaserver "$OS_URL/xdr-agent-telemetry/_search" \
 osd_admin '/api/xdr-defense/telemetry/search' -X POST -H 'osd-xsrf: true' -H 'Content-Type: application/json' \
   -d '{"module":"process","from":"2026-01-01T00:00:00Z","to":"2026-01-02T00:00:00Z","page":1,"query":{"match_all":{}}}' \
   | jq -e '.total == 4 and (.events | map(.index) | unique | length) == 2' >/dev/null
-for topic in logs security telemetry events; do
+for topic in logs security telemetry; do
   id="xdr-agent-${topic}-hidden"
   title="xdr-agent-${topic}"
   [[ "$topic" != telemetry ]] || id=xdr-agent-telemetry
-  if [[ "$topic" == events ]]; then id=xdr-agent-events; title='xdr-agent-*'; fi
   # An empty tenant is Global. Curl's semicolon syntax sends an empty header;
   # the literal name "global" can reach OpenSearch as an unknown custom tenant.
   osd_admin "/api/saved_objects/index-pattern/$id" -H 'securitytenant;' \
     | jq -e --arg title "$title" '.attributes.title == $title and .attributes.timeFieldName == "@timestamp"
         and (.attributes.fields | fromjson | any(.name == "@timestamp" and .type == "date"))' >/dev/null
 done
-# The Discover field API must resolve the combined pattern to stream fields.
-osd_admin '/api/index_patterns/_fields_for_wildcard?pattern=xdr-agent-*' -H 'securitytenant;' \
+# Exercise both Global and Private tenant setup, including manually created views.
+osd_admin '/api/xdr_manager/setup' -X POST -H 'osd-xsrf: true' -H 'securitytenant;' \
+  | jq -e '.telemetryId == "xdr-agent-telemetry"' >/dev/null
+osd_admin '/api/opensearch-dashboards/settings' -H 'securitytenant;' \
+  | jq -e '.settings.defaultIndex.userValue == "xdr-agent-telemetry"' >/dev/null
+osd_admin '/api/saved_objects/index-pattern/xdr-agent-telemetry' -H 'securitytenant;' \
+  | jq '{attributes: (.attributes + {fieldFormatMap: "{\"host.hostname\":{\"id\":\"string\"}}"})}' >"$SMOKE_DIR/private-view.json"
+osd_admin '/api/saved_objects/index-pattern/manual-telemetry' -X POST -H 'osd-xsrf: true' \
+  -H 'securitytenant: __user__' -H 'Content-Type: application/json' \
+  --data-binary "@$SMOKE_DIR/private-view.json" >/dev/null
+for _ in 1 2; do
+  osd_admin '/api/xdr_manager/setup' -X POST -H 'osd-xsrf: true' -H 'securitytenant: __user__' \
+    >"$SMOKE_DIR/private-setup.json"
+  if ! jq -e '.telemetryId == "manual-telemetry"' "$SMOKE_DIR/private-setup.json" >/dev/null; then
+    cat "$SMOKE_DIR/private-setup.json" >&2
+    osd_admin '/api/saved_objects/_find?type=index-pattern&per_page=100' -H 'securitytenant: __user__' \
+      | jq '[.saved_objects[] | {id, title: .attributes.title}]' >&2
+    exit 1
+  fi
+done
+osd_admin '/api/opensearch-dashboards/settings' -H 'securitytenant: __user__' \
+  | jq -e '.settings.defaultIndex.userValue == "manual-telemetry"' >/dev/null
+osd_admin '/api/saved_objects/_find?type=index-pattern&per_page=100' -H 'securitytenant: __user__' \
+  | jq -e '(.saved_objects | map(.attributes.title) | sort) ==
+      ["xdr-agent-logs", "xdr-agent-security", "xdr-agent-telemetry"]' >/dev/null
+osd_admin '/api/saved_objects/index-pattern/manual-telemetry' -H 'securitytenant: __user__' \
+  | jq -e '.attributes.fieldFormatMap == "{\"host.hostname\":{\"id\":\"string\"}}"' >/dev/null
+# The Discover field API must resolve the telemetry stream's fields.
+osd_admin '/api/index_patterns/_fields_for_wildcard?pattern=xdr-agent-telemetry' -H 'securitytenant;' \
   | jq -e '.fields | any(.name == "@timestamp" and .type == "date")' >/dev/null
 for path in '/xdr-agent-telemetry/_search' '/unrelated-index/_doc/event'; do
   method=GET
@@ -176,4 +203,4 @@ code="$(curl -kSs -o /dev/null -w '%{http_code}' -u "xdr-agent:$XDR_AGENT_PASSWO
 [[ "$code" == 401 ]] || { echo "Deleted ingest account was not rejected: $code" >&2; exit 1; }
 code="$(curl -sS -o /dev/null -w '%{http_code}' "$OSD_URL/api/xdr-navigator/session")"
 [[ "$code" == 401 || "$code" == 302 ]] || { echo "Unexpected anonymous session response: $code" >&2; exit 1; }
-echo "Authenticated startup, stream views/permissions, rollover, shared Basic-auth account scoping/revocation and suite authorization passed for ${OSD_VERSION}"
+echo "Authenticated startup, Global/Private Discover defaults, stream permissions/rollover, Basic-auth ingestion and suite authorization passed for ${OSD_VERSION}"
