@@ -76,10 +76,11 @@ helm upgrade opensearch-dashboards opensearch/opensearch-dashboards -n "$NAMESPA
   --rollback-on-failure --wait --timeout 5m --debug
 ```
 
-Each release refreshes the same image tag. To install a newer build for the same Dashboards version, restart the deployment after the Helm upgrade:
+After the GitHub image publication succeeds, restart to refresh the same tag (`pullPolicy: Always`) and wait for completion:
 
 ```bash
 kubectl -n "$NAMESPACE" rollout restart deployment/opensearch-dashboards
+kubectl -n "$NAMESPACE" rollout status deployment/opensearch-dashboards --timeout=5m
 ```
 
 In a new terminal, inspect the logs:
@@ -125,4 +126,4 @@ OSD_ROOT=/path/to/bootstrapped/OpenSearch-Dashboards-3.9.0 \
 
 Builds use isolated staging and leave the upstream checkout untouched. Sentry is excluded.
 
-Each plugin's `package.json` owns its version; builds copy it into the staged manifest. Only XDR Agent keeps a `VERSION` file and releases independently. Coordinator discovers Agent upgrades from its GitHub releases; Agent and plugin versions need not match.
+Each plugin's `package.json` owns its version; builds copy it into the staged manifest. Only XDR Agent keeps a `VERSION` file and releases independently. Coordinator reads Agent's `VERSION` on GitHub; Agent and plugin versions need not match.
