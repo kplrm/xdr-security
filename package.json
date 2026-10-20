@@ -1,6 +1,7 @@
 {
   "name": "xdr-security",
   "version": "0.1.0",
+  "license": "AGPL-3.0",
   "private": true,
   "description": "OpenSearch Dashboards wrapper plugin for XDR apps",
   "main": "index.js",

@@ -127,3 +127,13 @@ OSD_ROOT=/path/to/bootstrapped/OpenSearch-Dashboards-3.9.0 \
 Builds use isolated staging and leave the upstream checkout untouched. Sentry is excluded.
 
 Each plugin's `package.json` owns its version; builds copy it into the staged manifest. Only XDR Agent keeps a `VERSION` file and releases independently. Coordinator reads Agent's `VERSION` on GitHub; Agent and plugin versions need not match.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development, validation, and reporting guidelines.
+
+## License
+
+Copyright (C) 2026 Diego A. Guillen-Rosaperez
+
+Licensed under the [GNU Affero General Public License, version 3 only](LICENSE) (`AGPL-3.0`). Third-party components retain their own licenses and notices.
