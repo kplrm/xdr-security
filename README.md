@@ -28,7 +28,7 @@ Agent protection content updates arrive with Agent upgrades. Ransomware, memory 
 
 See [local development setup](docs/local-development.md) for the folder structure, source builds, and local installation.
 
-## Install on Kubernetes
+## Deploy on Kubernetes
 
 See [Kubernetes installation](docs/kubernetes.md) for roles, secrets, Helm configuration, and Agent ingestion.
 

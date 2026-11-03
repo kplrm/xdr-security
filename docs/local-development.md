@@ -23,11 +23,10 @@ your-workspace/
     └── compose.local.yml
 ```
 
-Start inside your cloned `xdr-security/` repository. Clone only the siblings you do not already have:
+Start inside `your-workspace/` directory. Clone all xdr plugins:
 
 ```bash
-cd ..
-for repo in xdr-coordinator xdr-defense xdr-visualizer xdr-navigator xdr-agent; do
+for repo in xdr-security xdr-coordinator xdr-defense xdr-visualizer xdr-navigator xdr-agent; do
   git clone "https://github.com/kplrm/$repo.git"
 done
 mkdir -p .build/plugins
