@@ -39,7 +39,7 @@ Run all remaining commands from the parent folder. Builds use disposable copies 
 
 ## 2. Configure once
 
-Keep `dev.env` for subsequent runs so Navigator can decrypt saved credentials. The Compose override mounts your local ZIPs and selects the existing demo Dashboards backend account.
+The commands below create `.build/dev.env` and `.build/compose.local.yml`. Keep the generated `dev.env` for subsequent runs so Navigator can decrypt saved credentials. The Compose override mounts your local ZIPs and selects the existing demo Dashboards backend account.
 
 ```bash
 sudo sysctl -w vm.max_map_count=262144
