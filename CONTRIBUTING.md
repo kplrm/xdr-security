@@ -4,10 +4,10 @@ This repository owns suite navigation, shared access enforcement, and release pa
 
 ## Development and validation
 
-Use Python 3 and the Node.js/dependency tooling required by your target OpenSearch Dashboards version. Point `OSD_ROOT` at a bootstrapped checkout matching that version:
+Follow the [local development guide](docs/local-development.md) for workspace setup, plugin builds, and the Podman Compose stack. After setup, run these checks from `xdr-security/`; Python 3 is required for the bundle tests:
 
 ```bash
-export OSD_ROOT=/path/to/bootstrapped/OpenSearch-Dashboards
+export OSD_ROOT="$(cd .build/OpenSearch-Dashboards && pwd)"
 node --test scripts/test_access.cjs
 python3 -m unittest discover -s tests -v
 npm run build
@@ -15,7 +15,7 @@ npm run build
 
 The build targets the version of `OSD_ROOT` by default. An explicit `--opensearch-dashboards-version` must match that checkout. The build uses disposable staging; keep the upstream checkout untouched.
 
-For bundle or deployment changes, follow the workflow's artifact verification and Docker smoke checks. Use disposable containers with Security enabled to validate role enforcement and app access. Report the component revisions and Dashboards version used.
+For bundle or deployment changes, validate role enforcement and app access in the local Podman stack with Security enabled. The release workflow also verifies bundle artifacts and runs Docker smoke checks in disposable containers. Report the component revisions and Dashboards version used.
 
 ## Engineering expectations
 

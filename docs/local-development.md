@@ -24,7 +24,6 @@ your-workspace/
 ├── xdr-defense/
 ├── xdr-visualizer/
 ├── xdr-navigator/
-├── xdr-agent/
 └── .build/
   ├── OpenSearch-Dashboards/
   ├── plugins/
@@ -35,7 +34,7 @@ your-workspace/
 Start inside `your-workspace/` directory. Clone all xdr plugins and download a fixed OpenSearch Dashboards release archive:
 
 ```bash
-for repo in xdr-security xdr-coordinator xdr-defense xdr-visualizer xdr-navigator xdr-agent; do
+for repo in xdr-security xdr-coordinator xdr-defense xdr-visualizer xdr-navigator; do
   git clone "https://github.com/kplrm/$repo.git"
 done
 mkdir -p .build/plugins
@@ -114,4 +113,4 @@ podman compose --env-file .build/dev.env -f xdr-security/podman-compose.yml \
 
 The final command installs the local ZIPs at startup; `--no-deps` skips the published-ZIP sidecar and demo reinitialization service. Once Dashboards finishes starting, open <http://localhost:5601> and sign in as `admin` with the password in `.build/dev.env`.
 
-After code changes, repeat step 3 and the final Compose command. See [CONTRIBUTING](../CONTRIBUTING.md#development-and-validation) for validation commands. For Agent builds, tests, installation, and enrollment, follow the [Agent README](https://github.com/kplrm/xdr-agent/blob/main/README.md#build-test-and-install-locally-debianubuntu-amd64), using `http://localhost:5601` as the Coordinator URL.
+After code changes, repeat step 3 and the final Compose command. See [CONTRIBUTING](../CONTRIBUTING.md#development-and-validation) for validation commands. Use `http://localhost:5601` as the Coordinator URL.
