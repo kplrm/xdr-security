@@ -114,3 +114,12 @@ podman compose --env-file .build/dev.env -f xdr-security/podman-compose.yml \
 The final command installs the local ZIPs at startup; `--no-deps` skips the published-ZIP sidecar and demo reinitialization service. Once Dashboards finishes starting, open <http://localhost:5601> and sign in as `admin` with the password in `.build/dev.env`.
 
 After code changes, repeat step 3 and the final Compose command. See [CONTRIBUTING](../CONTRIBUTING.md#development-and-validation) for validation commands. Use `http://localhost:5601` as the Coordinator URL.
+
+## 5. Stop the stack
+
+From the parent folder, stop the containers while keeping their data:
+
+```bash
+podman compose --env-file .build/dev.env -f xdr-security/podman-compose.yml \
+  -f .build/compose.local.yml stop
+```
